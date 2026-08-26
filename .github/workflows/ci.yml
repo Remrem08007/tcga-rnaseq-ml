@@ -33,7 +33,7 @@ jobs:
             --outdir "$tmpdir" >/dev/null
           test -s "$tmpdir/cohort.tsv"
           test -s "$tmpdir/cohort_summary.json"
-      - name: Cache CLI smoke test
+      - name: Cache and audit CLI smoke test
         run: |
           tmpdir="$(mktemp -d)"
           python -m tcga_ml.cache_cli \
@@ -41,9 +41,15 @@ jobs:
             --cohort tests/fixtures/cohort_cache_small.tsv \
             --outdir "$tmpdir" \
             --chunk-genes 2 >/dev/null
+          python -m tcga_ml.audit_cli \
+            --matrix "$tmpdir/expression.float32.npy" \
+            --output "$tmpdir/audit.json" >/dev/null
           python - <<PY
+          import json
           import numpy as np
           m = np.load("$tmpdir/expression.float32.npy", mmap_mode="r")
           assert m.shape == (2, 3)
           assert m.dtype == np.float32
+          audit = json.load(open("$tmpdir/audit.json"))
+          assert audit["shape"] == [2, 3]
           PY
