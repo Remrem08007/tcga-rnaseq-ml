@@ -22,5 +22,14 @@ jobs:
         run: pytest
       - name: Compile package
         run: python -m compileall -q src
-      - name: CLI smoke test
+      - name: Source CLI smoke test
         run: python -m tcga_ml.download --list >/dev/null
+      - name: Cohort CLI smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          python -m tcga_ml.cohort_cli \
+            --expression tests/fixtures/expression_small.tsv \
+            --quality tests/fixtures/quality_small.tsv \
+            --outdir "$tmpdir" >/dev/null
+          test -s "$tmpdir/cohort.tsv"
+          test -s "$tmpdir/cohort_summary.json"

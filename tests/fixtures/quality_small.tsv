@@ -1,0 +1,7 @@
+aliquot_barcode	cancer type	platform	Do_not_use
+TCGA-AA-0001-01A-11R-0000-01	BRCA	IlluminaHiSeq_RNASeqV2	False
+TCGA-AA-0001-01B-11R-0000-01	BRCA	IlluminaHiSeq_RNASeqV2	False
+TCGA-BB-0002-01A-11R-0000-01	LUAD	IlluminaHiSeq_RNASeqV2	True
+TCGA-CC-0003-11A-11R-0000-01	BRCA	IlluminaHiSeq_RNASeqV2	False
+TCGA-DD-0004-01A-11R-0000-01	ACC	IlluminaHiSeq_RNASeqV2	False
+TCGA-EE-0005-01A-11R-0000-01	LUSC	OtherPlatform	False
