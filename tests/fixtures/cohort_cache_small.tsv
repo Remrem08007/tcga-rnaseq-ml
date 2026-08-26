@@ -1,0 +1,3 @@
+matrix_index	expression_barcode	sample_barcode	participant_barcode	sample_type_code	cancer_type
+0	TCGA-AA-0001-01A-11R-0000-01	TCGA-AA-0001-01	TCGA-AA-0001	01	BRCA
+2	TCGA-CC-0003-01A-11R-0000-01	TCGA-CC-0003-01	TCGA-CC-0003	01	LUAD
