@@ -19,7 +19,7 @@ jobs:
       - name: Install
         run: python -m pip install -e '.[dev]'
       - name: Tests
-        run: pytest
+        run: pytest -W error::FutureWarning
       - name: Compile package
         run: python -m compileall -q src
       - name: Source CLI smoke test
@@ -68,3 +68,35 @@ jobs:
           assert summary["n_holdout"] == 3
           assert len(summary["manifest_sha256"]) == 64
           PY
+      - name: Benchmark CLI smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          python - <<PY
+          import csv
+          import numpy as np
+          from pathlib import Path
+          p = Path("$tmpdir")
+          rng = np.random.default_rng(3)
+          blocks = []
+          labels = []
+          for ci, label in enumerate(["BRCA", "LUAD", "LUSC"]):
+              block = rng.lognormal(0.5, 0.2, size=(15, 9)).astype("float32")
+              block[:, ci*3:ci*3+3] *= 6
+              blocks.append(block)
+              labels += [label] * 15
+          np.save(p / "x.npy", np.vstack(blocks))
+          with (p / "split.tsv").open("w", newline="") as handle:
+              writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+              writer.writerow(["cache_index", "participant_barcode", "cancer_type", "split"])
+              for i, label in enumerate(labels):
+                  writer.writerow([i, f"TCGA-AA-{i:04d}", label, "holdout" if i % 5 == 0 else "development"])
+          PY
+          python -m tcga_ml.benchmark_cli \
+            --matrix "$tmpdir/x.npy" \
+            --split "$tmpdir/split.tsv" \
+            --outdir "$tmpdir/out" \
+            --model dummy \
+            --model logistic_l2 \
+            --cv-folds 3 \
+            --n-jobs 1 >/dev/null
+          test -s "$tmpdir/out/benchmark.json"

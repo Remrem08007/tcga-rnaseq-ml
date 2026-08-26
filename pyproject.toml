@@ -9,7 +9,7 @@ description = "Leakage-resistant, interpretable machine learning on TCGA PanCanc
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26",
-  "scikit-learn>=1.5,<2",
+  "scikit-learn>=1.8,<2",
 ]
 
 [project.optional-dependencies]
