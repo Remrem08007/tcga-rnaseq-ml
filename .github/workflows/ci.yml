@@ -53,3 +53,18 @@ jobs:
           audit = json.load(open("$tmpdir/audit.json"))
           assert audit["shape"] == [2, 3]
           PY
+      - name: Split CLI smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          python -m tcga_ml.split_cli \
+            --samples tests/fixtures/samples_split_small.tsv \
+            --outdir "$tmpdir" \
+            --holdout-fraction 0.2 \
+            --seed 20260825 >/dev/null
+          python - <<PY
+          import json
+          summary = json.load(open("$tmpdir/split_summary.json"))
+          assert summary["n_development"] == 12
+          assert summary["n_holdout"] == 3
+          assert len(summary["manifest_sha256"]) == 64
+          PY
