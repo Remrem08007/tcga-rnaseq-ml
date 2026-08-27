@@ -18,7 +18,8 @@ Implemented and tested:
 - train-only imputation, zero-variance filtering, StandardScaler / RobustScaler pipelines;
 - frozen stratified 80/20 participant-level development/holdout manifest with SHA-256;
 - development-only CV benchmark for dummy, L2 logistic, elastic net, linear SVM, and PCA + logistic models;
-- CV parallelism with inner numerical threads limited to avoid CPU oversubscription.
+- CV parallelism with inner numerical threads limited to avoid CPU oversubscription;
+- leakage-safe gene-budget experiments with fold-wise ANOVA selection, selection stability, and class-specific linear coefficients.
 
 See [`ROADMAP.md`](ROADMAP.md) for the locked study design and remaining milestones.
 
@@ -93,6 +94,27 @@ python -m tcga_ml.benchmark_cli \
 ```
 
 The benchmark command **does not evaluate the frozen holdout**.
+
+Run the M4 gene-budget/stability study with the primary elastic-net model:
+
+```bash
+python -m tcga_ml.feature_budget_cli \
+  --matrix data/cache/expression.float32.npy \
+  --split data/processed/split_manifest.tsv \
+  --genes data/cache/genes.tsv \
+  --outdir results/feature_budget/elastic_net \
+  --model elastic_net \
+  --negative-policy clip \
+  --n-jobs 0
+```
+
+By default this evaluates the locked `20, 50, 100, 200, 500, 1000, 5000, all` gene budgets using development-set CV only. It writes:
+
+- `feature_budget.json` — performance, fit/score time, wall time, and controller-process memory observations by budget;
+- `feature_stability.tsv` — how often each gene is selected across folds plus mean absolute linear-model coefficient;
+- `coefficients.tsv` — fold- and class-specific coefficients mapped back to the original TCGA gene index/symbol.
+
+Feature selection remains inside each training fold: `log2p1 → imputation → variance filtering → SelectKBest → scaling → model`. The frozen holdout is still untouched.
 
 ## Green-commit rule
 
