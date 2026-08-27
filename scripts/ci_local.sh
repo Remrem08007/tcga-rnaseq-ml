@@ -11,6 +11,7 @@ python -m compileall -q src
 python -m tcga_ml.download --list >/dev/null
 python scripts/run_xgboost.py --help >/dev/null
 python scripts/run_focused_pairs.py --help >/dev/null
+python scripts/run_final_evaluation.py --help >/dev/null
 bash -n slurm/xgboost_cpu_scaling.sbatch slurm/xgboost_gpu.sbatch
 
 cohort_tmp="$(mktemp -d)"
@@ -20,8 +21,9 @@ benchmark_tmp="$(mktemp -d)"
 feature_tmp="$(mktemp -d)"
 xgboost_tmp="$(mktemp -d)"
 focused_tmp="$(mktemp -d)"
+final_tmp="$(mktemp -d)"
 cleanup() {
-  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp" "$focused_tmp"
+  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp" "$focused_tmp" "$final_tmp"
 }
 trap cleanup EXIT
 
@@ -217,4 +219,67 @@ test -s "$focused_tmp/out/focused_pair_confusion.tsv"
 test -s "$focused_tmp/out/focused_pair_predictions.tsv"
 test -s "$focused_tmp/out/focused_pair_errors.tsv"
 test -s "$focused_tmp/out/focused_pair_genes.tsv"
+
+
+python - "$final_tmp" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+(root / "selection.json").write_text(
+    json.dumps(
+        {
+            "candidate_id": "ci-logistic-l2-four-genes",
+            "primary_metric": "macro_f1",
+            "selection_rationale": (
+                "Synthetic CI candidate selected from development-only fixture evidence."
+            ),
+            "pipeline": {
+                "family": "linear_gene_budget",
+                "model": "logistic_l2",
+                "gene_budget": 4,
+                "negative_policy": "error",
+                "scaler": "standard",
+                "seed": 20260825,
+            },
+        }
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+
+python -m tcga_ml.final_evaluation_cli lock \
+  --config "$final_tmp/selection.json" \
+  --matrix "$benchmark_tmp/x.npy" \
+  --split "$benchmark_tmp/split.tsv" \
+  --genes "$benchmark_tmp/genes.tsv" \
+  --evidence "$feature_tmp/out/feature_budget.json" \
+  --output "$final_tmp/final.lock.json" >/dev/null
+
+python -m tcga_ml.final_evaluation_cli verify \
+  --lock "$final_tmp/final.lock.json" \
+  --matrix "$benchmark_tmp/x.npy" \
+  --split "$benchmark_tmp/split.tsv" \
+  --genes "$benchmark_tmp/genes.tsv" \
+  --evidence "$feature_tmp/out/feature_budget.json" >/dev/null
+
+python -m tcga_ml.final_evaluation_cli evaluate \
+  --lock "$final_tmp/final.lock.json" \
+  --matrix "$benchmark_tmp/x.npy" \
+  --split "$benchmark_tmp/split.tsv" \
+  --genes "$benchmark_tmp/genes.tsv" \
+  --evidence "$feature_tmp/out/feature_budget.json" \
+  --outdir "$final_tmp/out" \
+  --receipt "$final_tmp/final.receipt.json" >/dev/null
+
+test -s "$final_tmp/final.receipt.json"
+test -s "$final_tmp/out/final_metrics.json"
+test -s "$final_tmp/out/final_predictions.tsv"
+test -s "$final_tmp/out/final_confusion.tsv"
+test -s "$final_tmp/out/final_pipeline.joblib"
+test -s "$final_tmp/out/final_confusion.svg"
+test -s "$final_tmp/out/final_per_class_f1.svg"
+
 printf 'CI gate: PASS\n'
