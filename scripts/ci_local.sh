@@ -9,14 +9,17 @@ export PYTHONWARNINGS="error::FutureWarning"
 python -m pytest -q -W error::FutureWarning
 python -m compileall -q src
 python -m tcga_ml.download --list >/dev/null
+python scripts/run_xgboost.py --help >/dev/null
+bash -n slurm/xgboost_cpu_scaling.sbatch slurm/xgboost_gpu.sbatch
 
 cohort_tmp="$(mktemp -d)"
 cache_tmp="$(mktemp -d)"
 split_tmp="$(mktemp -d)"
 benchmark_tmp="$(mktemp -d)"
 feature_tmp="$(mktemp -d)"
+xgboost_tmp="$(mktemp -d)"
 cleanup() {
-  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp"
+  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp"
 }
 trap cleanup EXIT
 
@@ -124,4 +127,37 @@ python -m tcga_ml.feature_budget_cli \
 test -s "$feature_tmp/out/feature_budget.json"
 test -s "$feature_tmp/out/feature_stability.tsv"
 test -s "$feature_tmp/out/coefficients.tsv"
+
+python -m tcga_ml.xgboost_cli probe >/dev/null
+python -m tcga_ml.xgboost_cli cv \
+  --matrix "$benchmark_tmp/x.npy" \
+  --split "$benchmark_tmp/split.tsv" \
+  --genes "$benchmark_tmp/genes.tsv" \
+  --outdir "$xgboost_tmp/cv" \
+  --device cpu \
+  --threads 1 \
+  --fold-jobs 1 \
+  --gene-budget 4 \
+  --cv-folds 2 \
+  --n-estimators 4 \
+  --max-depth 2 \
+  --learning-rate 0.2 >/dev/null
+
+test -s "$xgboost_tmp/cv/xgboost_benchmark.json"
+test -s "$xgboost_tmp/cv/xgboost_feature_importance.tsv"
+
+SLURM_CPUS_PER_TASK=2 python -m tcga_ml.xgboost_cli scale \
+  --matrix "$benchmark_tmp/x.npy" \
+  --split "$benchmark_tmp/split.tsv" \
+  --outdir "$xgboost_tmp/scaling" \
+  --cpu-threads 1 \
+  --cpu-threads 2 \
+  --gene-budget 4 \
+  --cv-folds 2 \
+  --n-estimators 3 \
+  --max-depth 2 \
+  --learning-rate 0.2 >/dev/null
+
+test -s "$xgboost_tmp/scaling/compute_scaling.json"
+test -s "$xgboost_tmp/scaling/compute_scaling.tsv"
 printf 'CI gate: PASS\n'
