@@ -10,6 +10,7 @@ python -m pytest -q -W error::FutureWarning
 python -m compileall -q src
 python -m tcga_ml.download --list >/dev/null
 python scripts/run_xgboost.py --help >/dev/null
+python scripts/run_focused_pairs.py --help >/dev/null
 bash -n slurm/xgboost_cpu_scaling.sbatch slurm/xgboost_gpu.sbatch
 
 cohort_tmp="$(mktemp -d)"
@@ -18,8 +19,9 @@ split_tmp="$(mktemp -d)"
 benchmark_tmp="$(mktemp -d)"
 feature_tmp="$(mktemp -d)"
 xgboost_tmp="$(mktemp -d)"
+focused_tmp="$(mktemp -d)"
 cleanup() {
-  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp"
+  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp" "$focused_tmp"
 }
 trap cleanup EXIT
 
@@ -160,4 +162,59 @@ SLURM_CPUS_PER_TASK=2 python -m tcga_ml.xgboost_cli scale \
 
 test -s "$xgboost_tmp/scaling/compute_scaling.json"
 test -s "$xgboost_tmp/scaling/compute_scaling.tsv"
+
+python - "$focused_tmp" <<'PY'
+import csv
+import sys
+from pathlib import Path
+import numpy as np
+
+root = Path(sys.argv[1])
+rng = np.random.default_rng(11)
+labels = ["LUAD", "LUSC", "KIRC", "KIRP"]
+blocks = []
+manifest = []
+cache_index = 0
+for class_index, label in enumerate(labels):
+    block = rng.lognormal(0.4, 0.15, size=(8, 8)).astype("float32")
+    block[:, class_index] *= 7
+    blocks.append(block)
+    for local_index in range(8):
+        manifest.append(
+            [
+                cache_index,
+                f"TCGA-{class_index:02d}-{local_index:04d}",
+                label,
+                "holdout" if local_index == 7 else "development",
+            ]
+        )
+        cache_index += 1
+np.save(root / "x.npy", np.vstack(blocks))
+with (root / "split.tsv").open("w", newline="") as handle:
+    writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+    writer.writerow(["cache_index", "participant_barcode", "cancer_type", "split"])
+    writer.writerows(manifest)
+with (root / "genes.tsv").open("w", newline="") as handle:
+    writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+    writer.writerow(["gene_index", "source_gene_id", "symbol", "entrez_id"])
+    for index in range(8):
+        writer.writerow([index, f"PAIR{index}|{index}", f"PAIR{index}", index])
+PY
+
+python -m tcga_ml.focused_pairs_cli \
+  --matrix "$focused_tmp/x.npy" \
+  --split "$focused_tmp/split.tsv" \
+  --genes "$focused_tmp/genes.tsv" \
+  --outdir "$focused_tmp/out" \
+  --model logistic_l2 \
+  --gene-budget 4 \
+  --cv-folds 2 \
+  --n-jobs 1 >/dev/null
+
+test -s "$focused_tmp/out/focused_pairs.json"
+test -s "$focused_tmp/out/focused_pair_metrics.tsv"
+test -s "$focused_tmp/out/focused_pair_confusion.tsv"
+test -s "$focused_tmp/out/focused_pair_predictions.tsv"
+test -s "$focused_tmp/out/focused_pair_errors.tsv"
+test -s "$focused_tmp/out/focused_pair_genes.tsv"
 printf 'CI gate: PASS\n'
