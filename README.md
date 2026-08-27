@@ -23,9 +23,10 @@ Implemented and tested:
 - nonlinear XGBoost benchmark with inverse-frequency fold-local sample weights;
 - explicit CPU/CUDA device handling that refuses silent GPU-to-CPU fallback;
 - CPU thread-scaling and optional GPU timing benchmark with predictive metrics kept alongside timing results;
-- development-only LUAD↔LUSC and KIRC↔KIRP studies with OOF error analysis and fold-stable gene directions.
+- development-only LUAD↔LUSC and KIRC↔KIRP studies with OOF error analysis and fold-stable gene directions;
+- SHA-256-bound final-pipeline lock and receipt-guarded one-time holdout evaluator, tested on synthetic data only.
 
-See [`ROADMAP.md`](ROADMAP.md) for the locked study design, [`docs/compute.md`](docs/compute.md) for the acceleration policy, and [`docs/focused_pairs.md`](docs/focused_pairs.md) for the M6 leakage boundary and interpretation guide.
+See [`ROADMAP.md`](ROADMAP.md) for the locked study design, [`docs/compute.md`](docs/compute.md) for the acceleration policy, [`docs/focused_pairs.md`](docs/focused_pairs.md) for the M6 interpretation guide, and [`docs/final_evaluation.md`](docs/final_evaluation.md) for the M7 lock/receipt protocol.
 
 ## Reproducible data setup
 
@@ -217,6 +218,35 @@ python -m tcga_ml.focused_pairs_cli \
 The command filters to development participants before constructing either pair study. Within each pair, preprocessing, feature selection, and fitting remain inside the CV training fold. The implementation asserts that every development participant receives exactly one out-of-fold prediction. The frozen holdout is not passed to these estimators and remains reserved for M7.
 
 The study writes aggregate and per-class metrics, raw and row-normalized confusion counts, participant-level OOF predictions, confidence-ranked errors, and fold-stability/coefficient summaries mapped to TCGA genes. These are predictive development-set associations, not causal biomarkers or clinical validation. See [the focused-pair methodology](docs/focused_pairs.md) for the output contract and interpretation limits.
+
+## Locked final evaluation framework
+
+M7 separates model selection from the irreversible holdout run. First, write a selection JSON that names the candidate and explains why it was chosen from development-only evidence. Then create and verify a lock:
+
+\`\`\`bash
+python -m tcga_ml.final_evaluation_cli lock \
+  --config config/final_pipeline.json \
+  --matrix data/cache/expression.float32.npy \
+  --split data/processed/split_manifest.tsv \
+  --genes data/cache/genes.tsv \
+  --evidence results/feature_budget/elastic_net/feature_budget.json \
+  --evidence results/benchmarks/xgboost-cpu/xgboost_benchmark.json \
+  --output results/final/final_evaluation.lock.json
+
+python -m tcga_ml.final_evaluation_cli verify \
+  --lock results/final/final_evaluation.lock.json \
+  --matrix data/cache/expression.float32.npy \
+  --split data/processed/split_manifest.tsv \
+  --genes data/cache/genes.tsv \
+  --evidence results/feature_budget/elastic_net/feature_budget.json \
+  --evidence results/benchmarks/xgboost-cpu/xgboost_benchmark.json
+\`\`\`
+
+Locking and verification do not fit or score a model. The lock requires every selection-evidence JSON to declare development-only scope and \`holdout_used: false\`, normalizes the complete pipeline configuration, fixes macro F1 as the primary metric, and binds the selection plus data artifacts by SHA-256.
+
+The real \`evaluate\` subcommand must be run only after the candidate and rationale are final. It creates a persistent receipt **before** loading holdout rows, refuses existing receipts/output directories, fits the locked pipeline on all development rows, and writes the fitted pipeline, participant predictions, final metrics, confusion data, and SVG figures. See [the final-evaluation protocol](docs/final_evaluation.md) before using it.
+
+The repository CI executes this workflow only on generated synthetic data. The real TCGA holdout has not been opened by these tests, no real final candidate has been selected here, and no TCGA holdout result is claimed.
 
 ## Green-commit rule
 
