@@ -22,9 +22,10 @@ Implemented and tested:
 - leakage-safe gene-budget experiments with fold-wise ANOVA selection, selection stability, and class-specific linear coefficients;
 - nonlinear XGBoost benchmark with inverse-frequency fold-local sample weights;
 - explicit CPU/CUDA device handling that refuses silent GPU-to-CPU fallback;
-- CPU thread-scaling and optional GPU timing benchmark with predictive metrics kept alongside timing results.
+- CPU thread-scaling and optional GPU timing benchmark with predictive metrics kept alongside timing results;
+- development-only LUAD↔LUSC and KIRC↔KIRP studies with OOF error analysis and fold-stable gene directions.
 
-See [`ROADMAP.md`](ROADMAP.md) for the locked study design and remaining milestones and [`docs/compute.md`](docs/compute.md) for the acceleration policy.
+See [`ROADMAP.md`](ROADMAP.md) for the locked study design, [`docs/compute.md`](docs/compute.md) for the acceleration policy, and [`docs/focused_pairs.md`](docs/focused_pairs.md) for the M6 leakage boundary and interpretation guide.
 
 ## Reproducible data setup
 
@@ -196,6 +197,26 @@ python -m tcga_ml.xgboost_cli scale \
 Add `--include-gpu` on a GPU node to append a CUDA measurement, or `--require-gpu` when an unavailable CUDA path should fail the job. The benchmark records wall time, speedup relative to the first CPU run, macro F1, balanced accuracy, and host RSS. It does **not** claim a GPU peak-memory value without a proper device-level sampler.
 
 Generic SLURM starting points are provided in `slurm/xgboost_cpu_scaling.sbatch` and `slurm/xgboost_gpu.sbatch`; cluster-specific accounts/partitions remain intentionally absent from the public repository.
+
+## Focused cancer-pair studies
+
+Run both locked M6 comparisons with the default elastic-net estimator:
+
+```bash
+python -m tcga_ml.focused_pairs_cli \
+  --matrix data/cache/expression.float32.npy \
+  --split data/processed/split_manifest.tsv \
+  --genes data/cache/genes.tsv \
+  --outdir results/focused_pairs/elastic_net \
+  --model elastic_net \
+  --gene-budget 1000 \
+  --negative-policy clip \
+  --n-jobs 0
+```
+
+The command filters to development participants before constructing either pair study. Within each pair, preprocessing, feature selection, and fitting remain inside the CV training fold. The implementation asserts that every development participant receives exactly one out-of-fold prediction. The frozen holdout is not passed to these estimators and remains reserved for M7.
+
+The study writes aggregate and per-class metrics, raw and row-normalized confusion counts, participant-level OOF predictions, confidence-ranked errors, and fold-stability/coefficient summaries mapped to TCGA genes. These are predictive development-set associations, not causal biomarkers or clinical validation. See [the focused-pair methodology](docs/focused_pairs.md) for the output contract and interpretation limits.
 
 ## Green-commit rule
 
