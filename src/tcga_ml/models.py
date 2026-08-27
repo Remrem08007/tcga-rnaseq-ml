@@ -58,7 +58,6 @@ def build_model_pipeline(
             class_weight="balanced",
             max_iter=5_000,
             random_state=seed,
-            n_jobs=1,
         )
         return _append_estimator(pre, "model", model)
 
