@@ -5,6 +5,7 @@ import json
 
 from .final_evaluation import (
     create_final_evaluation_lock,
+    run_final_evaluation,
     verify_final_evaluation_lock,
 )
 
@@ -48,6 +49,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optionally re-verify the complete selection-evidence set.",
     )
+    evaluate = subparsers.add_parser(
+        "evaluate",
+        help="Run the receipt-guarded final holdout evaluation exactly once.",
+    )
+    evaluate.add_argument("--lock", required=True)
+    evaluate.add_argument("--matrix", required=True)
+    evaluate.add_argument("--split", required=True)
+    evaluate.add_argument("--genes", required=True)
+    evaluate.add_argument("--outdir", required=True)
+    evaluate.add_argument(
+        "--receipt",
+        required=True,
+        help="Persistent one-time receipt path outside --outdir.",
+    )
+    evaluate.add_argument(
+        "--evidence",
+        action="append",
+        default=None,
+        help="Optionally re-verify the complete selection-evidence set.",
+    )
     return parser
 
 
@@ -75,19 +96,43 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    payload = verify_final_evaluation_lock(
+    if args.command == "verify":
+        payload = verify_final_evaluation_lock(
+            args.lock,
+            args.matrix,
+            args.split,
+            args.genes,
+            evidence_paths=args.evidence,
+        )
+        print(
+            json.dumps(
+                {
+                    "holdout_status": payload["holdout_status"],
+                    "lock_sha256": payload["lock_sha256"],
+                    "verified": True,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    payload = run_final_evaluation(
         args.lock,
         args.matrix,
         args.split,
         args.genes,
+        args.outdir,
+        args.receipt,
         evidence_paths=args.evidence,
     )
     print(
         json.dumps(
             {
-                "holdout_status": payload["holdout_status"],
-                "lock_sha256": payload["lock_sha256"],
-                "verified": True,
+                "candidate_id": payload["candidate_id"],
+                "holdout_used": payload["holdout_used"],
+                "metrics": payload["metrics"],
+                "outputs": payload["outputs"],
             },
             indent=2,
             sort_keys=True,

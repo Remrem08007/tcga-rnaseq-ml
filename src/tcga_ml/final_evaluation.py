@@ -2,12 +2,33 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
+import csv
+from html import escape
 import hashlib
 import json
 from pathlib import Path
+import time
 from typing import Any
 
-from .feature_budget import FEATURE_BUDGET_MODELS, parse_gene_budget
+import joblib
+import numpy as np
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    log_loss,
+    precision_recall_fscore_support,
+    roc_auc_score,
+)
+
+from .benchmark import read_split_manifest
+from .feature_budget import (
+    FEATURE_BUDGET_MODELS,
+    build_feature_budget_pipeline,
+    parse_gene_budget,
+)
+from .models import build_model_pipeline
 from .splitting import DEFAULT_SEED
 
 
@@ -451,3 +472,599 @@ def verify_final_evaluation_lock(
                 "selection evidence SHA-256 set does not match the lock"
             )
     return payload
+
+
+def build_locked_pipeline(lock_payload: Mapping[str, object]):
+    selection = lock_payload.get("selection")
+    if not isinstance(selection, Mapping):
+        raise FinalEvaluationLockError("lock is missing the selected pipeline")
+    pipeline_raw = selection.get("pipeline")
+    pipeline = normalize_pipeline_config(pipeline_raw)
+    family = pipeline["family"]
+
+    if family == "linear_gene_budget":
+        return build_feature_budget_pipeline(
+            str(pipeline["model"]),
+            pipeline["gene_budget"],
+            negative_policy=str(pipeline["negative_policy"]),
+            scaler=str(pipeline["scaler"]),
+            seed=int(pipeline["seed"]),
+        )
+
+    if family == "pca_logistic":
+        return build_model_pipeline(
+            "pca_logistic",
+            negative_policy=str(pipeline["negative_policy"]),
+            scaler=str(pipeline["scaler"]),
+            seed=int(pipeline["seed"]),
+            pca_components=int(pipeline["pca_components"]),
+        )
+
+    from .xgboost_benchmark import build_xgboost_pipeline
+
+    return build_xgboost_pipeline(
+        device=str(pipeline["device"]),
+        threads=int(pipeline["threads"]),
+        gene_budget=pipeline["gene_budget"],
+        negative_policy=str(pipeline["negative_policy"]),
+        seed=int(pipeline["seed"]),
+        n_estimators=int(pipeline["n_estimators"]),
+        max_depth=int(pipeline["max_depth"]),
+        learning_rate=float(pipeline["learning_rate"]),
+        subsample=float(pipeline["subsample"]),
+        colsample_bytree=float(pipeline["colsample_bytree"]),
+        min_child_weight=float(pipeline["min_child_weight"]),
+        reg_alpha=float(pipeline["reg_alpha"]),
+        reg_lambda=float(pipeline["reg_lambda"]),
+        gamma=float(pipeline["gamma"]),
+        max_bin=int(pipeline["max_bin"]),
+    )
+
+
+def load_locked_split_data(
+    matrix_path: str | Path,
+    split_manifest: str | Path,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    list[str],
+    np.ndarray,
+    np.ndarray,
+    list[str],
+]:
+    matrix = np.load(Path(matrix_path), mmap_mode="r")
+    if matrix.ndim != 2:
+        raise FinalEvaluationLockError("expression cache must be a 2-D matrix")
+    rows = read_split_manifest(split_manifest)
+
+    try:
+        indices = [int(row["cache_index"]) for row in rows]
+    except (TypeError, ValueError) as exc:
+        raise FinalEvaluationLockError(
+            "split manifest contains a non-integer cache index"
+        ) from exc
+    participants = [row["participant_barcode"] for row in rows]
+    if len(set(indices)) != len(indices):
+        raise FinalEvaluationLockError(
+            "split manifest contains duplicate cache indices"
+        )
+    if len(set(participants)) != len(participants):
+        raise FinalEvaluationLockError(
+            "split manifest contains duplicate participants"
+        )
+    if any(index < 0 or index >= matrix.shape[0] for index in indices):
+        raise FinalEvaluationLockError(
+            "split manifest contains cache indices outside the expression matrix"
+        )
+
+    development = [row for row in rows if row["split"] == "development"]
+    holdout = [row for row in rows if row["split"] == "holdout"]
+    if not development or not holdout:
+        raise FinalEvaluationLockError(
+            "split manifest must contain development and holdout samples"
+        )
+
+    development_indices = np.asarray(
+        [int(row["cache_index"]) for row in development],
+        dtype=np.int64,
+    )
+    holdout_indices = np.asarray(
+        [int(row["cache_index"]) for row in holdout],
+        dtype=np.int64,
+    )
+    y_development = np.asarray(
+        [row["cancer_type"] for row in development],
+        dtype=object,
+    )
+    y_holdout = np.asarray(
+        [row["cancer_type"] for row in holdout],
+        dtype=object,
+    )
+    development_classes = set(str(value) for value in np.unique(y_development))
+    holdout_classes = set(str(value) for value in np.unique(y_holdout))
+    if development_classes != holdout_classes:
+        raise FinalEvaluationLockError(
+            "development and holdout must contain the same cancer classes"
+        )
+
+    return (
+        np.asarray(matrix[development_indices], dtype=np.float32),
+        y_development,
+        [row["participant_barcode"] for row in development],
+        np.asarray(matrix[holdout_indices], dtype=np.float32),
+        y_holdout,
+        [row["participant_barcode"] for row in holdout],
+    )
+
+
+def _reserve_receipt(
+    receipt_path: Path,
+    *,
+    lock_sha256: str,
+    outdir: Path,
+) -> dict[str, object]:
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "status": "holdout_access_started",
+        "holdout_used": True,
+        "lock_sha256": lock_sha256,
+        "output_directory": str(outdir.resolve()),
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with receipt_path.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except FileExistsError as exc:
+        raise FinalEvaluationLockError(
+            f"final holdout already has a receipt; refusing a second evaluation: "
+            f"{receipt_path}"
+        ) from exc
+    return payload
+
+
+def _replace_json(path: Path, payload: Mapping[str, object]) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _probability_metrics(
+    estimator,
+    X_holdout: np.ndarray,
+    y_holdout: np.ndarray,
+    classes: list[str],
+) -> tuple[np.ndarray | None, dict[str, object]]:
+    if not hasattr(estimator, "predict_proba"):
+        return None, {
+            "available": False,
+            "multiclass_log_loss": None,
+            "ovr_roc_auc_macro": None,
+            "note": "The locked estimator does not expose predict_proba.",
+        }
+
+    probabilities = np.asarray(estimator.predict_proba(X_holdout), dtype=np.float64)
+    fitted_classes = [str(value) for value in estimator.classes_]
+    if probabilities.shape != (len(y_holdout), len(fitted_classes)):
+        raise AssertionError("probability matrix shape does not match fitted classes")
+    if fitted_classes != classes:
+        order = [fitted_classes.index(label) for label in classes]
+        probabilities = probabilities[:, order]
+
+    metrics: dict[str, object] = {
+        "available": True,
+        "multiclass_log_loss": float(
+            log_loss(y_holdout, probabilities, labels=classes)
+        ),
+        "ovr_roc_auc_macro": None,
+        "note": None,
+    }
+    try:
+        if len(classes) == 2:
+            binary_truth = np.asarray(y_holdout == classes[1], dtype=np.int64)
+            metrics["ovr_roc_auc_macro"] = float(
+                roc_auc_score(binary_truth, probabilities[:, 1])
+            )
+        else:
+            metrics["ovr_roc_auc_macro"] = float(
+                roc_auc_score(
+                    y_holdout,
+                    probabilities,
+                    labels=classes,
+                    multi_class="ovr",
+                    average="macro",
+                )
+            )
+    except ValueError as exc:
+        metrics["note"] = f"ROC-AUC unavailable: {exc}"
+    return probabilities, metrics
+
+
+def _metric_payload(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    classes: list[str],
+) -> tuple[dict[str, object], np.ndarray, np.ndarray]:
+    precision, recall, class_f1, support = precision_recall_fscore_support(
+        y_true,
+        y_pred,
+        labels=classes,
+        zero_division=0,
+    )
+    counts = confusion_matrix(y_true, y_pred, labels=classes)
+    row_totals = counts.sum(axis=1, keepdims=True)
+    normalized = np.divide(
+        counts,
+        row_totals,
+        out=np.zeros_like(counts, dtype=np.float64),
+        where=row_totals != 0,
+    )
+    return (
+        {
+            "primary_metric": PRIMARY_METRIC,
+            "macro_f1": float(f1_score(y_true, y_pred, average="macro")),
+            "weighted_f1": float(f1_score(y_true, y_pred, average="weighted")),
+            "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+            "accuracy": float(accuracy_score(y_true, y_pred)),
+            "per_class": [
+                {
+                    "class": label,
+                    "precision": float(precision[index]),
+                    "recall": float(recall[index]),
+                    "f1": float(class_f1[index]),
+                    "support": int(support[index]),
+                }
+                for index, label in enumerate(classes)
+            ],
+        },
+        counts,
+        normalized,
+    )
+
+
+def _write_predictions(
+    path: Path,
+    participants: list[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    classes: list[str],
+    probabilities: np.ndarray | None,
+) -> None:
+    probability_headers = [f"probability_{label}" for label in classes]
+    with path.open("x", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(
+            [
+                "participant_barcode",
+                "true_label",
+                "predicted_label",
+                "correct",
+                *probability_headers,
+            ]
+        )
+        for index, participant in enumerate(participants):
+            probability_values: list[str] = []
+            if probabilities is not None:
+                probability_values = [
+                    f"{float(value):.12g}" for value in probabilities[index]
+                ]
+            else:
+                probability_values = [""] * len(classes)
+            writer.writerow(
+                [
+                    participant,
+                    str(y_true[index]),
+                    str(y_pred[index]),
+                    str(bool(y_true[index] == y_pred[index])).lower(),
+                    *probability_values,
+                ]
+            )
+
+
+def _write_confusion_table(
+    path: Path,
+    classes: list[str],
+    counts: np.ndarray,
+    normalized: np.ndarray,
+) -> None:
+    with path.open("x", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(
+            ["true_label", "predicted_label", "count", "row_fraction"]
+        )
+        for true_index, true_label in enumerate(classes):
+            for predicted_index, predicted_label in enumerate(classes):
+                writer.writerow(
+                    [
+                        true_label,
+                        predicted_label,
+                        int(counts[true_index, predicted_index]),
+                        f"{float(normalized[true_index, predicted_index]):.12g}",
+                    ]
+                )
+
+
+def _write_confusion_svg(
+    path: Path,
+    classes: list[str],
+    counts: np.ndarray,
+    normalized: np.ndarray,
+) -> None:
+    cell = 58
+    left = 128
+    top = 132
+    width = left + cell * len(classes) + 36
+    height = top + cell * len(classes) + 74
+    elements = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+        f'height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        '<text x="20" y="28" font-family="sans-serif" font-size="18" '
+        'font-weight="bold">Final holdout confusion matrix</text>',
+        f'<text x="{left + cell * len(classes) / 2:.1f}" y="54" '
+        'text-anchor="middle" font-family="sans-serif" font-size="13">'
+        'Predicted class</text>',
+        f'<text x="20" y="{top + cell * len(classes) / 2:.1f}" '
+        'text-anchor="middle" font-family="sans-serif" font-size="13" '
+        f'transform="rotate(-90 20 {top + cell * len(classes) / 2:.1f})">'
+        'True class</text>',
+    ]
+    for index, label in enumerate(classes):
+        x = left + index * cell + cell / 2
+        y = top - 10
+        elements.append(
+            f'<text x="{x:.1f}" y="{y}" text-anchor="end" '
+            'font-family="sans-serif" font-size="11" '
+            f'transform="rotate(-45 {x:.1f} {y})">{escape(label)}</text>'
+        )
+        row_y = top + index * cell + cell / 2 + 4
+        elements.append(
+            f'<text x="{left - 10}" y="{row_y:.1f}" text-anchor="end" '
+            f'font-family="sans-serif" font-size="11">{escape(label)}</text>'
+        )
+    for row in range(len(classes)):
+        for column in range(len(classes)):
+            x = left + column * cell
+            y = top + row * cell
+            fraction = float(normalized[row, column])
+            opacity = 0.08 + 0.82 * fraction
+            text_color = "white" if fraction >= 0.55 else "#111827"
+            elements.extend(
+                [
+                    f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" '
+                    f'fill="#2563eb" fill-opacity="{opacity:.3f}" '
+                    'stroke="#d1d5db"/>',
+                    f'<text x="{x + cell / 2:.1f}" y="{y + cell / 2 - 2:.1f}" '
+                    f'text-anchor="middle" font-family="sans-serif" '
+                    f'font-size="13" font-weight="bold" fill="{text_color}">'
+                    f'{int(counts[row, column])}</text>',
+                    f'<text x="{x + cell / 2:.1f}" y="{y + cell / 2 + 15:.1f}" '
+                    f'text-anchor="middle" font-family="sans-serif" '
+                    f'font-size="10" fill="{text_color}">{fraction:.1%}</text>',
+                ]
+            )
+    elements.append("</svg>")
+    path.write_text("\n".join(elements) + "\n", encoding="utf-8")
+
+
+def _write_per_class_f1_svg(
+    path: Path,
+    per_class: list[dict[str, object]],
+) -> None:
+    width = 760
+    left = 116
+    right = 32
+    bar_height = 24
+    gap = 15
+    top = 62
+    height = top + len(per_class) * (bar_height + gap) + 44
+    plot_width = width - left - right
+    elements = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+        f'height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        '<text x="20" y="28" font-family="sans-serif" font-size="18" '
+        'font-weight="bold">Final holdout per-class F1</text>',
+    ]
+    for index, row in enumerate(per_class):
+        value = float(row["f1"])
+        y = top + index * (bar_height + gap)
+        elements.extend(
+            [
+                f'<text x="{left - 10}" y="{y + 17}" text-anchor="end" '
+                f'font-family="sans-serif" font-size="12">'
+                f'{escape(str(row["class"]))}</text>',
+                f'<rect x="{left}" y="{y}" width="{plot_width}" '
+                f'height="{bar_height}" fill="#e5e7eb"/>',
+                f'<rect x="{left}" y="{y}" width="{plot_width * value:.2f}" '
+                f'height="{bar_height}" fill="#2563eb"/>',
+                f'<text x="{left + plot_width * value + 6:.2f}" '
+                f'y="{y + 17}" font-family="sans-serif" font-size="11">'
+                f'{value:.3f}</text>',
+            ]
+        )
+    elements.append("</svg>")
+    path.write_text("\n".join(elements) + "\n", encoding="utf-8")
+
+
+def run_final_evaluation(
+    lock_path: str | Path,
+    matrix_path: str | Path,
+    split_manifest: str | Path,
+    gene_table: str | Path,
+    outdir: str | Path,
+    receipt_path: str | Path,
+    *,
+    evidence_paths: Iterable[str | Path] | None = None,
+) -> dict[str, object]:
+    lock_payload = verify_final_evaluation_lock(
+        lock_path,
+        matrix_path,
+        split_manifest,
+        gene_table,
+        evidence_paths=evidence_paths,
+    )
+    estimator = build_locked_pipeline(lock_payload)
+
+    output_dir = Path(outdir)
+    receipt = Path(receipt_path)
+    resolved_output = output_dir.resolve()
+    resolved_receipt = receipt.resolve()
+    if resolved_receipt == resolved_output or resolved_output in resolved_receipt.parents:
+        raise FinalEvaluationLockError(
+            "receipt must be outside the final output directory"
+        )
+    if output_dir.exists():
+        raise FinalEvaluationLockError(
+            f"refusing to reuse an existing final output directory: {output_dir}"
+        )
+
+    receipt_payload = _reserve_receipt(
+        receipt,
+        lock_sha256=str(lock_payload["lock_sha256"]),
+        outdir=output_dir,
+    )
+    try:
+        output_dir.mkdir(parents=True, exist_ok=False)
+        (
+            X_development,
+            y_development,
+            development_participants,
+            X_holdout,
+            y_holdout,
+            holdout_participants,
+        ) = load_locked_split_data(matrix_path, split_manifest)
+
+        if lock_payload["selection"]["pipeline"]["family"] == "pca_logistic":
+            requested = int(
+                lock_payload["selection"]["pipeline"]["pca_components"]
+            )
+            maximum = min(X_development.shape[1], len(X_development) - 1)
+            if requested > maximum:
+                raise FinalEvaluationLockError(
+                    f"locked PCA components ({requested}) exceed the final-fit "
+                    f"maximum ({maximum})"
+                )
+
+        fit_started = time.perf_counter()
+        estimator.fit(X_development, y_development)
+        fit_seconds = time.perf_counter() - fit_started
+
+        predict_started = time.perf_counter()
+        predictions = np.asarray(estimator.predict(X_holdout), dtype=object)
+        predict_seconds = time.perf_counter() - predict_started
+        if len(predictions) != len(y_holdout):
+            raise AssertionError("final prediction count does not match holdout size")
+
+        classes = sorted(str(value) for value in np.unique(y_development))
+        metrics, counts, normalized = _metric_payload(
+            y_holdout,
+            predictions,
+            classes=classes,
+        )
+        probabilities, probability_metrics = _probability_metrics(
+            estimator,
+            X_holdout,
+            y_holdout,
+            classes,
+        )
+        metrics["probability_metrics"] = probability_metrics
+
+        predictions_path = output_dir / "final_predictions.tsv"
+        confusion_path = output_dir / "final_confusion.tsv"
+        metrics_path = output_dir / "final_metrics.json"
+        model_path = output_dir / "final_pipeline.joblib"
+        confusion_svg = output_dir / "final_confusion.svg"
+        per_class_svg = output_dir / "final_per_class_f1.svg"
+
+        _write_predictions(
+            predictions_path,
+            holdout_participants,
+            y_holdout,
+            predictions,
+            classes=classes,
+            probabilities=probabilities,
+        )
+        _write_confusion_table(confusion_path, classes, counts, normalized)
+        _write_confusion_svg(confusion_svg, classes, counts, normalized)
+        _write_per_class_f1_svg(per_class_svg, metrics["per_class"])
+        joblib.dump(estimator, model_path, compress=3)
+
+        payload: dict[str, object] = {
+            "evaluation_scope": "locked_final_holdout_once",
+            "holdout_used": True,
+            "lock_sha256": lock_payload["lock_sha256"],
+            "candidate_id": lock_payload["selection"]["candidate_id"],
+            "pipeline": lock_payload["selection"]["pipeline"],
+            "primary_metric": PRIMARY_METRIC,
+            "n_development_samples": len(development_participants),
+            "n_holdout_samples": len(holdout_participants),
+            "classes": classes,
+            "fit_seconds": float(fit_seconds),
+            "predict_seconds": float(predict_seconds),
+            "metrics": metrics,
+            "confusion_counts": counts.astype(int).tolist(),
+            "confusion_normalized_true": normalized.tolist(),
+            "outputs": {
+                "predictions": predictions_path.name,
+                "confusion": confusion_path.name,
+                "model": model_path.name,
+                "confusion_svg": confusion_svg.name,
+                "per_class_f1_svg": per_class_svg.name,
+            },
+            "interpretation_note": (
+                "This is one locked retrospective TCGA holdout evaluation. "
+                "It is not prospective clinical validation."
+            ),
+        }
+        metrics_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        payload["outputs"]["metrics"] = metrics_path.name
+
+        output_files = [
+            predictions_path,
+            confusion_path,
+            metrics_path,
+            model_path,
+            confusion_svg,
+            per_class_svg,
+        ]
+        receipt_payload.update(
+            {
+                "status": "completed",
+                "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+                "n_development_samples": len(development_participants),
+                "n_holdout_samples": len(holdout_participants),
+                "outputs": {
+                    path.name: {
+                        "size_bytes": path.stat().st_size,
+                        "sha256": sha256_file(path),
+                    }
+                    for path in output_files
+                },
+            }
+        )
+        _replace_json(receipt, receipt_payload)
+        return payload
+    except Exception as exc:
+        receipt_payload.update(
+            {
+                "status": "failed_after_holdout_reservation",
+                "failed_at_utc": datetime.now(timezone.utc).isoformat(),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        )
+        _replace_json(receipt, receipt_payload)
+        raise
