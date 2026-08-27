@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+export PYTHONWARNINGS="error::FutureWarning"
+
 python -m pytest -q -W error::FutureWarning
 python -m compileall -q src
 python -m tcga_ml.download --list >/dev/null
@@ -12,8 +14,9 @@ cohort_tmp="$(mktemp -d)"
 cache_tmp="$(mktemp -d)"
 split_tmp="$(mktemp -d)"
 benchmark_tmp="$(mktemp -d)"
+feature_tmp="$(mktemp -d)"
 cleanup() {
-  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp"
+  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp"
 }
 trap cleanup EXIT
 
@@ -89,6 +92,11 @@ with (root / "split.tsv").open("w", newline="") as handle:
         writer.writerow(
             [index, f"TCGA-AA-{index:04d}", label, "holdout" if index % 5 == 0 else "development"]
         )
+with (root / "genes.tsv").open("w", newline="") as handle:
+    writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+    writer.writerow(["gene_index", "source_gene_id", "symbol", "entrez_id"])
+    for index in range(9):
+        writer.writerow([index, f"G{index}|{index}", f"G{index}", index])
 PY
 
 python -m tcga_ml.benchmark_cli \
@@ -101,4 +109,19 @@ python -m tcga_ml.benchmark_cli \
   --n-jobs 1 >/dev/null
 
 test -s "$benchmark_tmp/out/benchmark.json"
+
+python -m tcga_ml.feature_budget_cli \
+  --matrix "$benchmark_tmp/x.npy" \
+  --split "$benchmark_tmp/split.tsv" \
+  --genes "$benchmark_tmp/genes.tsv" \
+  --outdir "$feature_tmp/out" \
+  --model elastic_net \
+  --gene-budget 2 \
+  --gene-budget all \
+  --cv-folds 3 \
+  --n-jobs 1 >/dev/null
+
+test -s "$feature_tmp/out/feature_budget.json"
+test -s "$feature_tmp/out/feature_stability.tsv"
+test -s "$feature_tmp/out/coefficients.tsv"
 printf 'CI gate: PASS\n'
