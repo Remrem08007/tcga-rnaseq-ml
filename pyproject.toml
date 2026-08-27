@@ -16,6 +16,9 @@ dependencies = [
 dev = [
   "pytest>=8",
 ]
+xgboost = [
+  "xgboost>=3.0,<4",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
