@@ -111,11 +111,13 @@ def read_quality_annotations(path: str | Path) -> list[QualityRecord]:
 
 
 def read_expression_barcodes(path: str | Path) -> list[str]:
-    with Path(path).open("r", encoding="utf-8-sig") as handle:
-        header = handle.readline().rstrip("\r\n")
-    if not header:
+    with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+        try:
+            fields = next(csv.reader(handle, delimiter="\t"))
+        except StopIteration:
+            fields = []
+    if not fields:
         raise ValueError("expression TSV is empty")
-    fields = header.split("\t")
     if len(fields) < 2:
         raise ValueError("expression TSV header must contain gene_id and at least one sample")
     if _normalise_column(fields[0]) != "gene_id":
