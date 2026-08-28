@@ -76,6 +76,16 @@ def _parse_bool(value: str) -> bool:
     raise ValueError(f"cannot parse boolean value {value!r}")
 
 
+def _normalise_quality_aliquot(value: str) -> str:
+    """Canonicalize a known compact PanCancer quality-barcode representation."""
+    barcode = value.strip().upper()
+    fields = barcode.split("-")
+    if len(fields) == 6 and re.fullmatch(r"\d{2}[A-Z]\d{2}", fields[3]):
+        fields[3:4] = [fields[3][:3], fields[3][3:]]
+        return "-".join(fields)
+    return barcode
+
+
 def read_quality_annotations(path: str | Path) -> list[QualityRecord]:
     records: list[QualityRecord] = []
     with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
@@ -88,7 +98,7 @@ def read_quality_annotations(path: str | Path) -> list[QualityRecord]:
         dnu_col = _resolve_column(reader.fieldnames, "Do_not_use", "Do not use", "do_not_use")
 
         for line_number, row in enumerate(reader, start=2):
-            aliquot = (row.get(aliquot_col) or "").strip().upper()
+            aliquot = _normalise_quality_aliquot(row.get(aliquot_col) or "")
             if not aliquot:
                 continue
             try:
