@@ -223,6 +223,8 @@ The study writes aggregate and per-class metrics, raw and row-normalized confusi
 
 M7 separates model selection from the irreversible holdout run. First, write a selection JSON that names the candidate and explains why it was chosen from development-only evidence. Then create and verify a lock:
 
+Before writing that selection JSON, `python -m tcga_ml.candidate_comparison_cli` can combine the classical, feature-budget, and XGBoost development artifacts into one ranked decision table. It rejects holdout-touched evidence and never chooses a candidate automatically.
+
 \`\`\`bash
 python -m tcga_ml.final_evaluation_cli lock \
   --config config/final_pipeline.json \

@@ -12,6 +12,7 @@ python -m tcga_ml.download --list >/dev/null
 python scripts/run_xgboost.py --help >/dev/null
 python scripts/run_focused_pairs.py --help >/dev/null
 python scripts/run_final_evaluation.py --help >/dev/null
+python scripts/compare_candidates.py --help >/dev/null
 bash -n slurm/xgboost_cpu_scaling.sbatch slurm/xgboost_gpu.sbatch
 
 cohort_tmp="$(mktemp -d)"
@@ -21,9 +22,10 @@ benchmark_tmp="$(mktemp -d)"
 feature_tmp="$(mktemp -d)"
 xgboost_tmp="$(mktemp -d)"
 focused_tmp="$(mktemp -d)"
+comparison_tmp="$(mktemp -d)"
 final_tmp="$(mktemp -d)"
 cleanup() {
-  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp" "$focused_tmp" "$final_tmp"
+  rm -rf "$cohort_tmp" "$cache_tmp" "$split_tmp" "$benchmark_tmp" "$feature_tmp" "$xgboost_tmp" "$focused_tmp" "$comparison_tmp" "$final_tmp"
 }
 trap cleanup EXIT
 
@@ -164,6 +166,15 @@ SLURM_CPUS_PER_TASK=2 python -m tcga_ml.xgboost_cli scale \
 
 test -s "$xgboost_tmp/scaling/compute_scaling.json"
 test -s "$xgboost_tmp/scaling/compute_scaling.tsv"
+
+python -m tcga_ml.candidate_comparison_cli \
+  --evidence "$benchmark_tmp/out/benchmark.json" \
+  --evidence "$feature_tmp/out/feature_budget.json" \
+  --evidence "$xgboost_tmp/cv/xgboost_benchmark.json" \
+  --outdir "$comparison_tmp/out" >/dev/null
+
+test -s "$comparison_tmp/out/candidate_comparison.json"
+test -s "$comparison_tmp/out/candidate_comparison.tsv"
 
 python - "$focused_tmp" <<'PY'
 import csv
