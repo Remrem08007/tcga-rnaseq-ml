@@ -36,6 +36,20 @@ def test_read_expression_header_accepts_official_quoted_fields(tmp_path):
     ]
 
 
+def test_read_quality_normalises_compact_sample_and_portion_field(tmp_path):
+    quality = tmp_path / "quality.tsv"
+    quality.write_text(
+        "aliquot_barcode\tcancer type\tplatform\tDo_not_use\n"
+        "TCGA-D9-A1X3-06A21-A20M-20\tSKCM\tIlluminaHiSeq_RNASeqV2\tfalse\n",
+        encoding="utf-8",
+    )
+
+    records = read_quality_annotations(quality)
+
+    assert records[0].aliquot_barcode == "TCGA-D9-A1X3-06A-21-A20M-20"
+    assert records[0].sample_barcode == "TCGA-D9-A1X3-06"
+
+
 def test_build_cohort_filters_and_deduplicates_patient():
     barcodes = read_expression_barcodes(FIXTURES / "expression_small.tsv")
     quality = read_quality_annotations(FIXTURES / "quality_small.tsv")
