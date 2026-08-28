@@ -22,6 +22,20 @@ def test_read_quality_and_expression_headers():
     assert quality[0].cancer_type == "BRCA"
 
 
+def test_read_expression_header_accepts_official_quoted_fields(tmp_path):
+    expression = tmp_path / "quoted.tsv"
+    expression.write_text(
+        '"gene_id"\t"TCGA-OR-A5J1-01A-11R-A29S-07"\t'
+        '"TCGA-OR-A5J2-01A-11R-A29S-07"\n',
+        encoding="utf-8",
+    )
+
+    assert read_expression_barcodes(expression) == [
+        "TCGA-OR-A5J1-01A-11R-A29S-07",
+        "TCGA-OR-A5J2-01A-11R-A29S-07",
+    ]
+
+
 def test_build_cohort_filters_and_deduplicates_patient():
     barcodes = read_expression_barcodes(FIXTURES / "expression_small.tsv")
     quality = read_quality_annotations(FIXTURES / "quality_small.tsv")
