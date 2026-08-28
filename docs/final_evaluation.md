@@ -15,6 +15,20 @@ The lock, verification, and evaluation code is covered by unit tests and by an e
 
 Do not run the real \`evaluate\` command until the development comparison is finalized and its rationale has been reviewed.
 
+## 0. Compare candidates without selecting one
+
+Create a single holdout-blind decision table from the development-only benchmark artifacts:
+
+\`\`\`bash
+python -m tcga_ml.candidate_comparison_cli \
+  --evidence results/benchmarks/classical/benchmark.json \
+  --evidence results/feature_budget/elastic_net/feature_budget.json \
+  --evidence results/benchmarks/xgboost-cpu/xgboost_benchmark.json \
+  --outdir results/final/candidate-comparison
+\`\`\`
+
+The command refuses evidence unless it declares \`evaluation_scope: development_cross_validation_only\` and \`holdout_used: false\`. It ranks candidates descriptively by mean development-CV macro F1 and writes JSON/TSV outputs. It deliberately does **not** select a winner: uncertainty, feature stability, model complexity, and compute cost still require an explicit review before the selection configuration is written.
+
 ## 1. Write the selection configuration
 
 The selection configuration is a small JSON object. Example:
