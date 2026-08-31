@@ -45,6 +45,33 @@ def test_build_float32_sample_by_gene_cache(tmp_path):
     assert payload["dtype"] == "float32"
 
 
+def test_build_cache_accepts_official_quoted_header_and_gene_ids(tmp_path):
+    expression = tmp_path / "quoted-expression.tsv"
+    expression.write_text(
+        '"gene_id"\t"TCGA-AA-0001-01A-11R-0000-01"\t'
+        '"TCGA-BB-0002-01A-11R-0000-01"\n'
+        '"A1BG|1"\t1.5\t2.5\n'
+        '"TP53|7157"\t3.5\t4.5\n',
+        encoding="utf-8",
+    )
+    cohort = tmp_path / "cohort.tsv"
+    cohort.write_text(
+        "matrix_index\texpression_barcode\tparticipant_barcode\tcancer_type\n"
+        "0\tTCGA-AA-0001-01A-11R-0000-01\tTCGA-AA-0001\tBRCA\n"
+        "1\tTCGA-BB-0002-01A-11R-0000-01\tTCGA-BB-0002\tLUAD\n",
+        encoding="utf-8",
+    )
+
+    metadata = build_expression_cache(expression, cohort, tmp_path / "cache")
+
+    matrix = np.load(tmp_path / "cache" / "expression.float32.npy")
+    np.testing.assert_allclose(matrix, [[1.5, 3.5], [2.5, 4.5]])
+    assert metadata["shape"] == [2, 2]
+    with (tmp_path / "cache" / "genes.tsv").open() as handle:
+        genes = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["symbol"] for row in genes] == ["A1BG", "TP53"]
+
+
 def test_cache_preserves_nan_when_selected(tmp_path):
     cohort = tmp_path / "cohort.tsv"
     cohort.write_text(
