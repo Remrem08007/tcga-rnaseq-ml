@@ -27,6 +27,13 @@ class CohortIndex:
     cancer_type: str
 
 
+def _parse_expression_header(header: str) -> list[str]:
+    try:
+        return next(csv.reader([header], delimiter="\t"))
+    except csv.Error as exc:
+        raise ValueError("expression TSV header is malformed") from exc
+
+
 def scan_expression_tsv(path: str | Path) -> ExpressionScan:
     digest = hashlib.sha256()
     n_genes = 0
@@ -39,7 +46,7 @@ def scan_expression_tsv(path: str | Path) -> ExpressionScan:
             header = header_bytes.decode("utf-8-sig").rstrip("\r\n")
         except UnicodeDecodeError as exc:
             raise ValueError("expression TSV header is not UTF-8") from exc
-        fields = header.split("\t")
+        fields = _parse_expression_header(header)
         if len(fields) < 2 or fields[0].strip().lower() != "gene_id":
             raise ValueError("expression TSV must start with a gene_id column")
         barcodes = tuple(field.strip().upper() for field in fields[1:])
@@ -185,7 +192,7 @@ def build_expression_cache(
         pending_genes = []
 
     with expression.open("r", encoding="utf-8-sig") as handle, genes_path.open("w", encoding="utf-8", newline="") as gene_handle:
-        header = handle.readline().rstrip("\r\n").split("\t")
+        header = _parse_expression_header(handle.readline().rstrip("\r\n"))
         if tuple(field.strip().upper() for field in header[1:]) != scan.barcodes:
             raise ValueError("expression header changed between scan and cache pass")
         gene_writer = csv.writer(gene_handle, delimiter="\t", lineterminator="\n")
@@ -199,6 +206,7 @@ def build_expression_cache(
                 source_gene_id, payload = stripped.split("\t", 1)
             except ValueError as exc:
                 raise ValueError(f"malformed expression row at line {line_number}") from exc
+            source_gene_id = next(csv.reader([source_gene_id], delimiter="\t"))[0]
             all_values = _parse_values(payload, len(scan.barcodes))
             selected = all_values[selected_indices]
             missing_values += int(np.count_nonzero(~np.isfinite(selected)))
