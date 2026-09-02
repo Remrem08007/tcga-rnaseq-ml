@@ -121,6 +121,23 @@ python -m tcga_ml.feature_budget_cli \
   --n-jobs 0
 ```
 
+The CLI reports the active budget, completed CV folds, elapsed time, and a
+one-minute heartbeat. On an interactive terminal it refreshes a progress bar;
+in a scheduler log it emits one line per update.
+
+For the full study on an Alliance cluster, submit the provided batch template
+from the repository root:
+
+```bash
+mkdir -p logs
+sbatch --account=def-rejlap slurm/feature_budget.sbatch
+```
+
+The template requests five CPUs, 32 GB RAM, and 24 hours. It activates the
+repository virtual environment, limits nested numerical-library threads, uses
+the cached matrix/split/gene paths above, and writes progress to
+`logs/tcga-feature-budget-<job-id>.out`.
+
 By default this evaluates the locked `20, 50, 100, 200, 500, 1000, 5000, all` gene budgets using development-set CV only. It writes:
 
 - `feature_budget.json` — performance, fit/score time, wall time, and controller-process memory observations by budget;

@@ -96,6 +96,7 @@ A small PyTorch MLP remains an optional later ablation, not a required milestone
 
 Two generic starting points are provided:
 
+- `slurm/feature_budget.sbatch` for the full elastic-net gene-budget study;
 - `slurm/xgboost_cpu_scaling.sbatch` for CPU scaling;
 - `slurm/xgboost_gpu.sbatch` for an explicit CUDA run.
 

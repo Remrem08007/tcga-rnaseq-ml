@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import csv
+from contextlib import contextmanager
 import json
 import platform
 from dataclasses import dataclass
 from pathlib import Path
+import sys
+import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable, TextIO
 
+import joblib.parallel
 from joblib import parallel_backend
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, clone
@@ -42,6 +46,135 @@ DEFAULT_GENE_BUDGETS: tuple[int | str, ...] = (
     5_000,
     "all",
 )
+
+
+class FeatureBudgetProgress:
+    """Report fold progress in terminals and line-oriented scheduler logs."""
+
+    def __init__(
+        self,
+        *,
+        total_budgets: int,
+        cv_folds: int,
+        stream: TextIO | None = None,
+        heartbeat_seconds: float = 60.0,
+    ) -> None:
+        self.total_budgets = total_budgets
+        self.cv_folds = cv_folds
+        self.stream = stream if stream is not None else sys.stderr
+        self.heartbeat_seconds = heartbeat_seconds
+        self._is_terminal = bool(getattr(self.stream, "isatty", lambda: False)())
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._heartbeat: threading.Thread | None = None
+        self._budget_index = 0
+        self._budget: int | str = "all"
+        self._completed_folds = 0
+        self._budget_started = 0.0
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        rounded = max(0, int(seconds))
+        hours, remainder = divmod(rounded, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _line(self, *, state: str) -> str:
+        fraction = self._completed_folds / self.cv_folds
+        filled = min(24, int(24 * fraction))
+        bar = "#" * filled + "-" * (24 - filled)
+        elapsed = self._format_duration(time.perf_counter() - self._budget_started)
+        return (
+            f"[feature-budget] budget {self._budget_index}/{self.total_budgets} "
+            f"({self._budget} genes) [{bar}] "
+            f"folds {self._completed_folds}/{self.cv_folds} "
+            f"elapsed {elapsed} {state}"
+        )
+
+    def _render(self, *, state: str, final: bool = False) -> None:
+        with self._lock:
+            prefix = "\r" if self._is_terminal else ""
+            suffix = "\n" if final or not self._is_terminal else ""
+            print(
+                prefix + self._line(state=state),
+                file=self.stream,
+                end=suffix,
+                flush=True,
+            )
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop.wait(self.heartbeat_seconds):
+            self._render(state="running")
+
+    def start_budget(
+        self,
+        *,
+        budget_index: int,
+        budget: int | str,
+        n_jobs: int,
+    ) -> None:
+        self._budget_index = budget_index
+        self._budget = budget
+        self._completed_folds = 0
+        self._budget_started = time.perf_counter()
+        self._stop.clear()
+        self._render(state=f"starting with {n_jobs} worker(s)")
+        if self.heartbeat_seconds > 0:
+            self._heartbeat = threading.Thread(
+                target=self._heartbeat_loop,
+                name="feature-budget-progress",
+                daemon=True,
+            )
+            self._heartbeat.start()
+
+    def folds_completed(self, count: int) -> None:
+        self._completed_folds = min(
+            self.cv_folds,
+            self._completed_folds + count,
+        )
+        self._render(state="running")
+
+    def _stop_heartbeat(self) -> None:
+        self._stop.set()
+        if self._heartbeat is not None:
+            self._heartbeat.join(timeout=max(1.0, self.heartbeat_seconds + 1.0))
+            self._heartbeat = None
+
+    def finish_budget(self) -> None:
+        self._stop_heartbeat()
+        self._completed_folds = self.cv_folds
+        self._render(state="complete", final=True)
+
+    def fail_budget(self) -> None:
+        self._stop_heartbeat()
+        self._render(state="failed", final=True)
+
+
+@contextmanager
+def _joblib_progress(
+    callback: Callable[[int], None] | None,
+):
+    """Forward completed Joblib batches to a parent-process callback."""
+
+    if callback is None:
+        yield
+        return
+
+    original_callback = joblib.parallel.BatchCompletionCallBack
+
+    class ProgressBatchCompletionCallback(original_callback):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            callback(int(self.batch_size))
+            return result
+
+    joblib.parallel.BatchCompletionCallBack = ProgressBatchCompletionCallback
+    try:
+        yield
+    finally:
+        joblib.parallel.BatchCompletionCallBack = original_callback
 
 
 @dataclass(frozen=True)
@@ -246,6 +379,7 @@ def evaluate_gene_budget(
     negative_policy: str = "error",
     scaler: str = "standard",
     seed: int = DEFAULT_SEED,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     """Evaluate one gene budget and return summary plus compact fold details."""
 
@@ -265,7 +399,7 @@ def evaluate_gene_budget(
     with threadpool_limits(limits=1), parallel_backend(
         "loky",
         inner_max_num_threads=1,
-    ):
+    ), _joblib_progress(progress_callback):
         scores = cross_validate(
             pipeline,
             X,
@@ -413,6 +547,9 @@ def run_feature_budget(
     negative_policy: str = "error",
     scaler: str = "standard",
     seed: int = DEFAULT_SEED,
+    show_progress: bool = False,
+    progress_stream: TextIO | None = None,
+    progress_heartbeat_seconds: float = 60.0,
 ) -> dict[str, object]:
     """Run development-only gene-budget CV and stream interpretation outputs."""
 
@@ -421,6 +558,17 @@ def run_feature_budget(
     budgets = [parse_gene_budget(value) for value in gene_budgets]
     if len({str(value) for value in budgets}) != len(budgets):
         raise ValueError("gene budget list contains duplicates")
+
+    progress = (
+        FeatureBudgetProgress(
+            total_budgets=len(budgets),
+            cv_folds=cv_folds,
+            stream=progress_stream,
+            heartbeat_seconds=progress_heartbeat_seconds,
+        )
+        if show_progress
+        else None
+    )
 
     output_dir = Path(outdir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -470,18 +618,36 @@ def run_feature_budget(
             ]
         )
 
-        for budget in budgets:
-            summary, fold_details = evaluate_gene_budget(
-                X,
-                y,
-                model_name,
-                budget,
-                cv_folds=cv_folds,
-                n_jobs=n_jobs,
-                negative_policy=negative_policy,
-                scaler=scaler,
-                seed=seed,
-            )
+        for budget_index, budget in enumerate(budgets, start=1):
+            jobs = resolve_n_jobs(n_jobs, cv_folds=cv_folds)
+            if progress is not None:
+                progress.start_budget(
+                    budget_index=budget_index,
+                    budget=budget,
+                    n_jobs=jobs,
+                )
+            try:
+                summary, fold_details = evaluate_gene_budget(
+                    X,
+                    y,
+                    model_name,
+                    budget,
+                    cv_folds=cv_folds,
+                    n_jobs=n_jobs,
+                    negative_policy=negative_policy,
+                    scaler=scaler,
+                    seed=seed,
+                    progress_callback=(
+                        progress.folds_completed if progress is not None else None
+                    ),
+                )
+            except BaseException:
+                if progress is not None:
+                    progress.fail_budget()
+                raise
+            else:
+                if progress is not None:
+                    progress.finish_budget()
             _write_stability_rows(
                 stability_writer,
                 model_name=model_name,
