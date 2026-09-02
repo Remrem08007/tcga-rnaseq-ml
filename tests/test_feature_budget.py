@@ -1,4 +1,5 @@
 import csv
+import io
 import json
 
 import numpy as np
@@ -160,3 +161,29 @@ def test_run_feature_budget_is_dev_only_and_writes_interpretation(tmp_path):
 
     saved = json.loads((output / "feature_budget.json").read_text())
     assert saved["evaluation_scope"] == "development_cross_validation_only"
+
+
+def test_run_feature_budget_reports_parallel_fold_progress(tmp_path):
+    _synthetic_dataset(tmp_path)
+    progress = io.StringIO()
+    run_feature_budget(
+        tmp_path / "x.npy",
+        tmp_path / "split.tsv",
+        tmp_path / "genes.tsv",
+        tmp_path / "out",
+        model_name="logistic_l2",
+        gene_budgets=[2, "all"],
+        cv_folds=3,
+        n_jobs=2,
+        negative_policy="clip",
+        show_progress=True,
+        progress_stream=progress,
+        progress_heartbeat_seconds=0,
+    )
+
+    output = progress.getvalue()
+    assert "budget 1/2 (2 genes)" in output
+    assert "budget 2/2 (all genes)" in output
+    assert "folds 1/3" in output or "folds 2/3" in output
+    assert "folds 3/3" in output
+    assert output.count("complete") == 2

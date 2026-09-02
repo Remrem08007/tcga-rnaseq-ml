@@ -57,6 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="standard",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable fold progress and the one-minute running heartbeat.",
+    )
     return parser
 
 
@@ -79,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         negative_policy=args.negative_policy,
         scaler=args.scaler,
         seed=args.seed,
+        show_progress=not args.no_progress,
     )
     print(
         f"feature-budget results: {args.outdir}/feature_budget.json "

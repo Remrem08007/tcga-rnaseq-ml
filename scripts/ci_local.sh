@@ -13,7 +13,10 @@ python scripts/run_xgboost.py --help >/dev/null
 python scripts/run_focused_pairs.py --help >/dev/null
 python scripts/run_final_evaluation.py --help >/dev/null
 python scripts/compare_candidates.py --help >/dev/null
-bash -n slurm/xgboost_cpu_scaling.sbatch slurm/xgboost_gpu.sbatch
+bash -n \
+  slurm/feature_budget.sbatch \
+  slurm/xgboost_cpu_scaling.sbatch \
+  slurm/xgboost_gpu.sbatch
 
 cohort_tmp="$(mktemp -d)"
 cache_tmp="$(mktemp -d)"
