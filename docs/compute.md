@@ -96,8 +96,15 @@ A small PyTorch MLP remains an optional later ablation, not a required milestone
 
 Two generic starting points are provided:
 
+- `slurm/classical_benchmark.sbatch` for the full classical model comparison;
 - `slurm/feature_budget.sbatch` for the full elastic-net gene-budget study;
+- `slurm/xgboost_cpu_cv.sbatch` for the CPU XGBoost comparator;
 - `slurm/xgboost_cpu_scaling.sbatch` for CPU scaling;
 - `slurm/xgboost_gpu.sbatch` for an explicit CUDA run.
+- `slurm/focused_pairs.sbatch` for both locked cancer-pair studies.
 
-They intentionally contain no private account name, allocation, project path, or cluster-specific partition. Set `REPO_ROOT`, `MATRIX`, `SPLIT`, `GENES`, and `OUTDIR` in the job environment when the defaults do not match your staged analysis directory.
+They intentionally contain no account name; pass the account to `sbatch`. The
+GPU template uses Nibi's 10 GB H100 MIG request. Set `REPO_ROOT`, `MATRIX`, `SPLIT`, `GENES`, and
+`OUTDIR` in the job environment when the defaults do not match the staged
+analysis directory. Long-running model CLIs report task/fold progress and a
+one-minute heartbeat in scheduler logs by default.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from pathlib import Path
 
 import numpy as np
@@ -187,3 +188,56 @@ def test_cuda_probe_never_reports_cpu_fallback_as_cuda() -> None:
         assert probe.resolved is None or not probe.resolved.startswith("cuda")
         with pytest.raises(RuntimeError, match="CUDA"):
             resolve_device("cuda")
+
+
+def test_xgboost_cv_and_scaling_report_sequential_fold_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "2")
+    matrix_path, split_path, genes_path = _write_fixture(tmp_path)
+
+    cv_progress = io.StringIO()
+    run_xgboost_benchmark(
+        matrix_path,
+        split_path,
+        genes_path,
+        tmp_path / "benchmark-progress",
+        requested_device="cpu",
+        threads=1,
+        fold_jobs=1,
+        gene_budget=4,
+        cv_folds=2,
+        n_estimators=4,
+        max_depth=2,
+        learning_rate=0.2,
+        show_progress=True,
+        progress_stream=cv_progress,
+        progress_heartbeat_seconds=0,
+    )
+    cv_output = cv_progress.getvalue()
+    assert "run 1/1 (cpu, 4 genes)" in cv_output
+    assert "folds 1/2" in cv_output
+    assert "folds 2/2" in cv_output
+    assert "complete" in cv_output
+
+    scaling_progress = io.StringIO()
+    run_compute_scaling(
+        matrix_path,
+        split_path,
+        tmp_path / "scaling-progress",
+        cpu_threads=[1, 2],
+        gene_budget=4,
+        cv_folds=2,
+        n_estimators=3,
+        max_depth=2,
+        learning_rate=0.2,
+        show_progress=True,
+        progress_stream=scaling_progress,
+        progress_heartbeat_seconds=0,
+    )
+    scaling_output = scaling_progress.getvalue()
+    assert "configuration 1/2 (cpu, 1 thread(s))" in scaling_output
+    assert "configuration 2/2 (cpu, 2 thread(s))" in scaling_output
+    assert scaling_output.count("folds 2/2") >= 2
+    assert scaling_output.count("complete") == 2

@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--negative-policy", choices=("error", "clip"), default="error")
     parser.add_argument("--scaler", choices=("standard", "robust"), default="standard")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable study/fold progress and the one-minute running heartbeat.",
+    )
     return parser
 
 
@@ -52,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         negative_policy=args.negative_policy,
         scaler=args.scaler,
         seed=args.seed,
+        show_progress=not args.no_progress,
     )
     compact = {
         "evaluation_scope": payload["evaluation_scope"],

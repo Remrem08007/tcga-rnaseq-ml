@@ -19,6 +19,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scaler", choices=["standard", "robust"], default="standard")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--pca-components", type=int, default=100)
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable model/fold progress and the one-minute running heartbeat.",
+    )
     return parser
 
 
@@ -35,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         scaler=args.scaler,
         seed=args.seed,
         pca_components=args.pca_components,
+        show_progress=not args.no_progress,
     )
     for result in payload["models"]:
         macro = result["metrics"]["macro_f1"]["mean"]

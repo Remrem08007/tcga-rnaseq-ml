@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 import platform
 import time
-from typing import Iterable
+from typing import Callable, Iterable, TextIO
 
 from joblib import parallel_backend
 import numpy as np
-from sklearn.model_selection import cross_validate
 from threadpoolctl import threadpool_limits
 
 from .models import MODEL_NAMES, build_model_pipeline
+from .progress import ProgressReporter, cross_validate_with_progress
 from .splitting import DEFAULT_SEED, make_development_cv
 
 
@@ -96,6 +96,7 @@ def benchmark_model(
     scaler: str = "standard",
     seed: int = DEFAULT_SEED,
     pca_components: int = 100,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
     jobs = resolve_n_jobs(n_jobs, cv_folds=cv_folds)
     if model_name == "pca_logistic":
@@ -114,15 +115,16 @@ def benchmark_model(
 
     started = time.perf_counter()
     with threadpool_limits(limits=1), parallel_backend("loky", inner_max_num_threads=1):
-        scores = cross_validate(
+        scores = cross_validate_with_progress(
             pipeline,
             X,
             y,
             scoring=SCORING,
-            cv=cv,
+            cv_splits=cv.split(X, y),
             n_jobs=jobs,
-            return_train_score=False,
+            return_estimator=False,
             error_score="raise",
+            progress_callback=progress_callback,
         )
     wall_seconds = time.perf_counter() - started
 
@@ -157,6 +159,9 @@ def run_benchmark(
     scaler: str = "standard",
     seed: int = DEFAULT_SEED,
     pca_components: int = 100,
+    show_progress: bool = False,
+    progress_stream: TextIO | None = None,
+    progress_heartbeat_seconds: float = 60.0,
 ) -> dict[str, object]:
     selected_models = list(models)
     unknown = sorted(set(selected_models) - set(MODEL_NAMES))
@@ -166,20 +171,51 @@ def run_benchmark(
         raise ValueError("model list contains duplicates")
 
     X, y, participants = load_development_data(matrix_path, split_manifest)
-    results = [
-        benchmark_model(
-            X,
-            y,
-            name,
-            cv_folds=cv_folds,
-            n_jobs=n_jobs,
-            negative_policy=negative_policy,
-            scaler=scaler,
-            seed=seed,
-            pca_components=pca_components,
+    jobs = resolve_n_jobs(n_jobs, cv_folds=cv_folds)
+    progress = (
+        ProgressReporter(
+            prefix="classical",
+            task_name="model",
+            unit_name="folds",
+            total_tasks=len(selected_models),
+            total_units=cv_folds,
+            stream=progress_stream,
+            heartbeat_seconds=progress_heartbeat_seconds,
         )
-        for name in selected_models
-    ]
+        if show_progress
+        else None
+    )
+    results: list[dict[str, object]] = []
+    for model_index, name in enumerate(selected_models, start=1):
+        if progress is not None:
+            progress.start_task(
+                task_index=model_index,
+                task_label=name,
+                state=f"starting with {jobs} worker(s)",
+            )
+        try:
+            result = benchmark_model(
+                X,
+                y,
+                name,
+                cv_folds=cv_folds,
+                n_jobs=n_jobs,
+                negative_policy=negative_policy,
+                scaler=scaler,
+                seed=seed,
+                pca_components=pca_components,
+                progress_callback=(
+                    progress.units_completed if progress is not None else None
+                ),
+            )
+        except BaseException:
+            if progress is not None:
+                progress.fail_task()
+            raise
+        else:
+            if progress is not None:
+                progress.finish_task()
+        results.append(result)
 
     output_dir = Path(outdir)
     output_dir.mkdir(parents=True, exist_ok=True)

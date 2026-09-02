@@ -28,6 +28,9 @@ Implemented and tested:
 
 See [`ROADMAP.md`](ROADMAP.md) for the locked study design, [`docs/compute.md`](docs/compute.md) for the acceleration policy, [`docs/focused_pairs.md`](docs/focused_pairs.md) for the M6 interpretation guide, and [`docs/final_evaluation.md`](docs/final_evaluation.md) for the M7 lock/receipt protocol.
 
+For the exact continuation commands on Nibi, see the
+[`Nibi analysis runbook`](docs/nibi_runbook.md).
+
 ## Reproducible data setup
 
 Create an environment and install the development dependencies:
@@ -105,6 +108,9 @@ python -m tcga_ml.benchmark_cli \
 ```
 
 The benchmark command **does not evaluate the frozen holdout**.
+It reports the active model, completed folds, elapsed time, and a one-minute
+heartbeat. Submit `slurm/classical_benchmark.sbatch` for the full benchmark on
+an Alliance compute node.
 
 ## Gene-budget and feature-stability study
 
@@ -194,6 +200,9 @@ The CUDA probe performs real XGBoost training and inspects the fitted booster de
 
 XGBoost writes `xgboost_benchmark.json` plus `xgboost_feature_importance.tsv`, where fold-wise feature importance is mapped back to original TCGA gene identifiers. This remains **development-set CV only**.
 
+Both XGBoost commands report fold-level progress and a one-minute heartbeat.
+The CPU CV batch runner is `slurm/xgboost_cpu_cv.sbatch`.
+
 ## CPU/GPU compute benchmark
 
 Measure CPU thread scaling without concurrent folds competing for the same allocation:
@@ -235,6 +244,9 @@ python -m tcga_ml.focused_pairs_cli \
 The command filters to development participants before constructing either pair study. Within each pair, preprocessing, feature selection, and fitting remain inside the CV training fold. The implementation asserts that every development participant receives exactly one out-of-fold prediction. The frozen holdout is not passed to these estimators and remains reserved for M7.
 
 The study writes aggregate and per-class metrics, raw and row-normalized confusion counts, participant-level OOF predictions, confidence-ranked errors, and fold-stability/coefficient summaries mapped to TCGA genes. These are predictive development-set associations, not causal biomarkers or clinical validation. See [the focused-pair methodology](docs/focused_pairs.md) for the output contract and interpretation limits.
+
+The CLI reports the active pair/model study, completed folds, elapsed time, and
+a one-minute heartbeat. Use `slurm/focused_pairs.sbatch` for a batch run.
 
 ## Locked final evaluation framework
 

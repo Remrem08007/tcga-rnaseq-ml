@@ -4,7 +4,7 @@ import csv
 import json
 from pathlib import Path
 import time
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence, TextIO
 
 from joblib import Parallel, delayed, parallel_backend
 import numpy as np
@@ -28,6 +28,7 @@ from .feature_budget import (
     parse_gene_budget,
     read_gene_table,
 )
+from .progress import ProgressReporter, joblib_progress
 from .splitting import DEFAULT_SEED, make_development_cv
 
 
@@ -217,6 +218,7 @@ def evaluate_focused_pair(
     negative_policy: str = "error",
     scaler: str = "standard",
     seed: int = DEFAULT_SEED,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
     pair_key = parse_pair_name(pair_name)
     if model_name not in FEATURE_BUDGET_MODELS:
@@ -258,18 +260,39 @@ def evaluate_focused_pair(
 
     started = time.perf_counter()
     with threadpool_limits(limits=1), parallel_backend("loky", inner_max_num_threads=1):
-        fold_results = Parallel(n_jobs=jobs)(
-            delayed(_fit_pair_fold)(
-                pipeline,
-                X_pair,
-                y_pair,
-                np.asarray(train_indices, dtype=np.int64),
-                np.asarray(test_indices, dtype=np.int64),
-                fold_number=fold_number,
-                positive_class=class_b,
-            )
-            for fold_number, (train_indices, test_indices) in enumerate(splits, start=1)
-        )
+        if jobs == 1 and progress_callback is not None:
+            fold_results = []
+            for fold_number, (train_indices, test_indices) in enumerate(
+                splits, start=1
+            ):
+                fold_results.append(
+                    _fit_pair_fold(
+                        pipeline,
+                        X_pair,
+                        y_pair,
+                        np.asarray(train_indices, dtype=np.int64),
+                        np.asarray(test_indices, dtype=np.int64),
+                        fold_number=fold_number,
+                        positive_class=class_b,
+                    )
+                )
+                progress_callback(1)
+        else:
+            with joblib_progress(progress_callback):
+                fold_results = Parallel(n_jobs=jobs)(
+                    delayed(_fit_pair_fold)(
+                        pipeline,
+                        X_pair,
+                        y_pair,
+                        np.asarray(train_indices, dtype=np.int64),
+                        np.asarray(test_indices, dtype=np.int64),
+                        fold_number=fold_number,
+                        positive_class=class_b,
+                    )
+                    for fold_number, (train_indices, test_indices) in enumerate(
+                        splits, start=1
+                    )
+                )
     wall_seconds = time.perf_counter() - started
 
     predictions = np.empty(len(y_pair), dtype=object)
@@ -532,6 +555,9 @@ def run_focused_pair_studies(
     negative_policy: str = "error",
     scaler: str = "standard",
     seed: int = DEFAULT_SEED,
+    show_progress: bool = False,
+    progress_stream: TextIO | None = None,
+    progress_heartbeat_seconds: float = 60.0,
 ) -> dict[str, object]:
     pair_keys = [parse_pair_name(value) for value in pairs]
     if not pair_keys:
@@ -550,24 +576,59 @@ def run_focused_pair_studies(
 
     X, y, participants = load_development_data(matrix_path, split_manifest)
     genes = read_gene_table(gene_table, expected_features=X.shape[1])
-    studies = [
-        evaluate_focused_pair(
-            X,
-            y,
-            participants,
-            genes,
-            pair_key,
-            model_name=model_name,
-            gene_budget=gene_budget,
-            cv_folds=cv_folds,
-            n_jobs=n_jobs,
-            negative_policy=negative_policy,
-            scaler=scaler,
-            seed=seed,
-        )
+    jobs = resolve_n_jobs(n_jobs, cv_folds=cv_folds)
+    work = [
+        (pair_key, model_name)
         for pair_key in pair_keys
         for model_name in model_names
     ]
+    progress = (
+        ProgressReporter(
+            prefix="focused-pairs",
+            task_name="study",
+            unit_name="folds",
+            total_tasks=len(work),
+            total_units=cv_folds,
+            stream=progress_stream,
+            heartbeat_seconds=progress_heartbeat_seconds,
+        )
+        if show_progress
+        else None
+    )
+    studies: list[dict[str, object]] = []
+    for study_index, (pair_key, model_name) in enumerate(work, start=1):
+        if progress is not None:
+            progress.start_task(
+                task_index=study_index,
+                task_label=f"{pair_key}, {model_name}",
+                state=f"starting with {jobs} worker(s)",
+            )
+        try:
+            study = evaluate_focused_pair(
+                X,
+                y,
+                participants,
+                genes,
+                pair_key,
+                model_name=model_name,
+                gene_budget=gene_budget,
+                cv_folds=cv_folds,
+                n_jobs=n_jobs,
+                negative_policy=negative_policy,
+                scaler=scaler,
+                seed=seed,
+                progress_callback=(
+                    progress.units_completed if progress is not None else None
+                ),
+            )
+        except BaseException:
+            if progress is not None:
+                progress.fail_task()
+            raise
+        else:
+            if progress is not None:
+                progress.finish_task()
+        studies.append(study)
 
     ranking = sorted(
         (

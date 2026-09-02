@@ -1,4 +1,5 @@
 import csv
+import io
 import json
 
 import numpy as np
@@ -64,3 +65,26 @@ def test_benchmark_uses_development_only_and_linear_model_beats_dummy(tmp_path):
     assert scores["logistic_l2"] > scores["dummy"] + 0.4
     saved = json.loads((tmp_path / "results" / "benchmark.json").read_text())
     assert saved["holdout_used"] is False
+
+
+def test_benchmark_reports_model_and_sequential_fold_progress(tmp_path):
+    matrix, split = _write_synthetic_case(tmp_path)
+    progress = io.StringIO()
+    run_benchmark(
+        matrix,
+        split,
+        tmp_path / "results",
+        models=["dummy", "logistic_l2"],
+        cv_folds=3,
+        n_jobs=1,
+        show_progress=True,
+        progress_stream=progress,
+        progress_heartbeat_seconds=0,
+    )
+
+    output = progress.getvalue()
+    assert "model 1/2 (dummy)" in output
+    assert "model 2/2 (logistic_l2)" in output
+    assert "folds 1/3" in output
+    assert "folds 3/3" in output
+    assert output.count("complete") == 2
