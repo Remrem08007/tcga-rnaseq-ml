@@ -8,13 +8,13 @@ import os
 from pathlib import Path
 import platform
 import time
+from typing import Callable, TextIO
 import warnings
 
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import cross_validate
 from sklearn.pipeline import Pipeline
 from joblib import parallel_backend
 from threadpoolctl import threadpool_limits
@@ -22,6 +22,7 @@ from threadpoolctl import threadpool_limits
 from .benchmark import SCORING, _metric_summary, load_development_data
 from .feature_budget import AdaptiveSelectKBest, _selected_original_indices, parse_gene_budget, read_gene_table
 from .normalization import PanCancerLog2p1
+from .progress import ProgressReporter, cross_validate_with_progress
 from .splitting import DEFAULT_SEED, make_development_cv
 
 try:
@@ -337,6 +338,7 @@ def evaluate_xgboost_cv(
     learning_rate: float = 0.05,
     subsample: float = 0.8,
     colsample_bytree: float = 0.5,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     device, probe = resolve_device(requested_device)
     resolved_threads = resolve_threads(threads)
@@ -369,15 +371,16 @@ def evaluate_xgboost_cv(
     with threadpool_limits(limits=1), parallel_backend(
         "loky", inner_max_num_threads=1
     ):
-        scores = cross_validate(
+        scores = cross_validate_with_progress(
             pipeline,
             X,
             y,
             scoring=SCORING,
-            cv=cv,
+            cv_splits=cv.split(X, y),
             n_jobs=fold_jobs,
             return_estimator=True,
             error_score="raise",
+            progress_callback=progress_callback,
         )
     wall_seconds = time.perf_counter() - started
     rss_after = _peak_rss_mib()
@@ -460,11 +463,53 @@ def run_xgboost_benchmark(
     split_manifest: str | Path,
     gene_table: str | Path,
     outdir: str | Path,
+    *,
+    show_progress: bool = False,
+    progress_stream: TextIO | None = None,
+    progress_heartbeat_seconds: float = 60.0,
     **kwargs,
 ) -> dict[str, object]:
     X, y, participants = load_development_data(matrix_path, split_manifest)
     genes = read_gene_table(gene_table, expected_features=X.shape[1])
-    summary, folds = evaluate_xgboost_cv(X, y, **kwargs)
+    cv_folds = int(kwargs.get("cv_folds", 5))
+    fold_jobs = int(kwargs.get("fold_jobs", 1))
+    requested_device = str(kwargs.get("requested_device", "cpu"))
+    budget = parse_gene_budget(kwargs.get("gene_budget", 1_000))
+    progress = (
+        ProgressReporter(
+            prefix="xgboost",
+            task_name="run",
+            unit_name="folds",
+            total_tasks=1,
+            total_units=cv_folds,
+            stream=progress_stream,
+            heartbeat_seconds=progress_heartbeat_seconds,
+        )
+        if show_progress
+        else None
+    )
+    if progress is not None:
+        progress.start_task(
+            task_index=1,
+            task_label=f"{requested_device}, {budget} genes",
+            state=f"starting with {fold_jobs} fold worker(s)",
+        )
+    try:
+        summary, folds = evaluate_xgboost_cv(
+            X,
+            y,
+            progress_callback=(
+                progress.units_completed if progress is not None else None
+            ),
+            **kwargs,
+        )
+    except BaseException:
+        if progress is not None:
+            progress.fail_task()
+        raise
+    else:
+        if progress is not None:
+            progress.finish_task()
     importance = _aggregate_importance(folds, n_features=X.shape[1])
 
     output_dir = Path(outdir)
@@ -529,6 +574,9 @@ def run_compute_scaling(
     n_estimators: int = 200,
     max_depth: int = 6,
     learning_rate: float = 0.05,
+    show_progress: bool = False,
+    progress_stream: TextIO | None = None,
+    progress_heartbeat_seconds: float = 60.0,
 ) -> dict[str, object]:
     if not cpu_threads:
         raise ValueError("at least one CPU thread count is required")
@@ -543,34 +591,43 @@ def run_compute_scaling(
             f"CPU thread counts exceed available allocation ({allocation}): {oversized}"
         )
 
-    X, y, _ = load_development_data(matrix_path, split_manifest)
-    runs: list[dict[str, object]] = []
-    for thread_count in cpu_threads:
-        summary, _ = evaluate_xgboost_cv(
-            X,
-            y,
-            requested_device="cpu",
-            threads=thread_count,
-            fold_jobs=1,
-            gene_budget=gene_budget,
-            negative_policy=negative_policy,
-            cv_folds=cv_folds,
-            seed=seed,
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            learning_rate=learning_rate,
-        )
-        runs.append(summary)
-
-    gpu_status: dict[str, object] | None = None
+    gpu_probe: DeviceProbe | None = None
     if include_gpu or require_gpu:
-        probe = probe_cuda()
-        if probe.available:
+        gpu_probe = probe_cuda()
+        if require_gpu and not gpu_probe.available:
+            raise RuntimeError(
+                "GPU benchmark was required but unavailable: " + gpu_probe.reason
+            )
+
+    X, y, _ = load_development_data(matrix_path, split_manifest)
+    total_runs = len(cpu_threads) + int(bool(gpu_probe and gpu_probe.available))
+    progress = (
+        ProgressReporter(
+            prefix="xgboost-scale",
+            task_name="configuration",
+            unit_name="folds",
+            total_tasks=total_runs,
+            total_units=cv_folds,
+            stream=progress_stream,
+            heartbeat_seconds=progress_heartbeat_seconds,
+        )
+        if show_progress
+        else None
+    )
+    runs: list[dict[str, object]] = []
+    for run_index, thread_count in enumerate(cpu_threads, start=1):
+        if progress is not None:
+            progress.start_task(
+                task_index=run_index,
+                task_label=f"cpu, {thread_count} thread(s)",
+                state="starting",
+            )
+        try:
             summary, _ = evaluate_xgboost_cv(
                 X,
                 y,
-                requested_device="cuda",
-                threads=max(1, min(4, available_cpus())),
+                requested_device="cpu",
+                threads=thread_count,
                 fold_jobs=1,
                 gene_budget=gene_budget,
                 negative_policy=negative_policy,
@@ -579,13 +636,59 @@ def run_compute_scaling(
                 n_estimators=n_estimators,
                 max_depth=max_depth,
                 learning_rate=learning_rate,
+                progress_callback=(
+                    progress.units_completed if progress is not None else None
+                ),
             )
-            runs.append(summary)
-            gpu_status = {"status": "completed", "probe": probe.to_dict()}
+        except BaseException:
+            if progress is not None:
+                progress.fail_task()
+            raise
         else:
-            gpu_status = {"status": "unavailable", "probe": probe.to_dict()}
-            if require_gpu:
-                raise RuntimeError("GPU benchmark was required but unavailable: " + probe.reason)
+            if progress is not None:
+                progress.finish_task()
+        runs.append(summary)
+
+    gpu_status: dict[str, object] | None = None
+    if include_gpu or require_gpu:
+        if gpu_probe is not None and gpu_probe.available:
+            if progress is not None:
+                progress.start_task(
+                    task_index=len(cpu_threads) + 1,
+                    task_label="cuda",
+                    state="starting",
+                )
+            try:
+                summary, _ = evaluate_xgboost_cv(
+                    X,
+                    y,
+                    requested_device="cuda",
+                    threads=max(1, min(4, available_cpus())),
+                    fold_jobs=1,
+                    gene_budget=gene_budget,
+                    negative_policy=negative_policy,
+                    cv_folds=cv_folds,
+                    seed=seed,
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=learning_rate,
+                    progress_callback=(
+                        progress.units_completed if progress is not None else None
+                    ),
+                )
+            except BaseException:
+                if progress is not None:
+                    progress.fail_task()
+                raise
+            else:
+                if progress is not None:
+                    progress.finish_task()
+            runs.append(summary)
+            gpu_status = {"status": "completed", "probe": gpu_probe.to_dict()}
+        else:
+            if gpu_probe is None:
+                raise AssertionError("GPU probe was not run")
+            gpu_status = {"status": "unavailable", "probe": gpu_probe.to_dict()}
 
     baseline = next(run for run in runs if run["resolved_device"] == "cpu")
     baseline_seconds = float(baseline["wall_seconds"])

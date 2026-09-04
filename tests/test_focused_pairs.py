@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from pathlib import Path
 
 import numpy as np
@@ -167,3 +168,28 @@ def test_duplicate_focused_pair_request_is_rejected() -> None:
             pairs=("luad_lusc", "luad_lusc"),
             models=("logistic_l2",),
         )
+
+
+def test_focused_pairs_report_study_and_sequential_fold_progress(tmp_path: Path) -> None:
+    matrix, split, genes, _ = _write_fixture(tmp_path)
+    progress = io.StringIO()
+    run_focused_pair_studies(
+        matrix,
+        split,
+        genes,
+        tmp_path / "out",
+        models=("logistic_l2",),
+        gene_budget=4,
+        cv_folds=2,
+        n_jobs=1,
+        show_progress=True,
+        progress_stream=progress,
+        progress_heartbeat_seconds=0,
+    )
+
+    output = progress.getvalue()
+    assert "study 1/2 (luad_lusc, logistic_l2)" in output
+    assert "study 2/2 (kirc_kirp, logistic_l2)" in output
+    assert output.count("folds 1/2") >= 2
+    assert output.count("folds 2/2") >= 2
+    assert output.count("complete") == 2

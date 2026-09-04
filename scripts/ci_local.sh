@@ -14,7 +14,10 @@ python scripts/run_focused_pairs.py --help >/dev/null
 python scripts/run_final_evaluation.py --help >/dev/null
 python scripts/compare_candidates.py --help >/dev/null
 bash -n \
+  slurm/classical_benchmark.sbatch \
   slurm/feature_budget.sbatch \
+  slurm/focused_pairs.sbatch \
+  slurm/xgboost_cpu_cv.sbatch \
   slurm/xgboost_cpu_scaling.sbatch \
   slurm/xgboost_gpu.sbatch
 
@@ -118,7 +121,8 @@ python -m tcga_ml.benchmark_cli \
   --model dummy \
   --model logistic_l2 \
   --cv-folds 3 \
-  --n-jobs 1 >/dev/null
+  --n-jobs 1 \
+  --no-progress >/dev/null
 
 test -s "$benchmark_tmp/out/benchmark.json"
 
@@ -131,7 +135,8 @@ python -m tcga_ml.feature_budget_cli \
   --gene-budget 2 \
   --gene-budget all \
   --cv-folds 3 \
-  --n-jobs 1 >/dev/null
+  --n-jobs 1 \
+  --no-progress >/dev/null
 
 test -s "$feature_tmp/out/feature_budget.json"
 test -s "$feature_tmp/out/feature_stability.tsv"
@@ -150,7 +155,8 @@ python -m tcga_ml.xgboost_cli cv \
   --cv-folds 2 \
   --n-estimators 4 \
   --max-depth 2 \
-  --learning-rate 0.2 >/dev/null
+  --learning-rate 0.2 \
+  --no-progress >/dev/null
 
 test -s "$xgboost_tmp/cv/xgboost_benchmark.json"
 test -s "$xgboost_tmp/cv/xgboost_feature_importance.tsv"
@@ -165,7 +171,8 @@ SLURM_CPUS_PER_TASK=2 python -m tcga_ml.xgboost_cli scale \
   --cv-folds 2 \
   --n-estimators 3 \
   --max-depth 2 \
-  --learning-rate 0.2 >/dev/null
+  --learning-rate 0.2 \
+  --no-progress >/dev/null
 
 test -s "$xgboost_tmp/scaling/compute_scaling.json"
 test -s "$xgboost_tmp/scaling/compute_scaling.tsv"
@@ -225,7 +232,8 @@ python -m tcga_ml.focused_pairs_cli \
   --model logistic_l2 \
   --gene-budget 4 \
   --cv-folds 2 \
-  --n-jobs 1 >/dev/null
+  --n-jobs 1 \
+  --no-progress >/dev/null
 
 test -s "$focused_tmp/out/focused_pairs.json"
 test -s "$focused_tmp/out/focused_pair_metrics.tsv"

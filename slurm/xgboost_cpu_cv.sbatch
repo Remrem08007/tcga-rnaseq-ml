@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=tcga-xgb-gpu
-#SBATCH --gpus=h100_1g.10gb:1
-#SBATCH --cpus-per-task=4
+#SBATCH --job-name=tcga-xgb-cv
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
-#SBATCH --output=logs/tcga-xgb-gpu-%j.out
+#SBATCH --time=12:00:00
+#SBATCH --output=logs/tcga-xgb-cv-%j.out
 
 set -euo pipefail
 
@@ -12,10 +11,10 @@ REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
 MATRIX="${MATRIX:-$REPO_ROOT/data/cache/expression.float32.npy}"
 SPLIT="${SPLIT:-$REPO_ROOT/data/processed/split_manifest.tsv}"
 GENES="${GENES:-$REPO_ROOT/data/cache/genes.tsv}"
-OUTDIR="${OUTDIR:-$REPO_ROOT/results/benchmarks/xgboost-gpu}"
+OUTDIR="${OUTDIR:-$REPO_ROOT/results/benchmarks/xgboost-cpu}"
 GENE_BUDGET="${GENE_BUDGET:-1000}"
 NEGATIVE_POLICY="${NEGATIVE_POLICY:-clip}"
-THREADS="${SLURM_CPUS_PER_TASK:-4}"
+THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-1}}"
 
 module --force purge
 module load StdEnv/2023
@@ -35,17 +34,12 @@ if [[ -s "$OUTDIR/xgboost_benchmark.json" ]]; then
   exit 0
 fi
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi
-fi
-
-python -u -m tcga_ml.xgboost_cli probe
 python -u -m tcga_ml.xgboost_cli cv \
   --matrix "$MATRIX" \
   --split "$SPLIT" \
   --genes "$GENES" \
   --outdir "$OUTDIR" \
-  --device cuda \
+  --device cpu \
   --threads "$THREADS" \
   --fold-jobs 1 \
   --gene-budget "$GENE_BUDGET" \

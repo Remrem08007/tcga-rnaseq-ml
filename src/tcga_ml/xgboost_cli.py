@@ -45,6 +45,11 @@ def _model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--n-estimators", type=int, default=300)
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--learning-rate", type=float, default=0.05)
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable fold progress and the one-minute running heartbeat.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             n_estimators=args.n_estimators,
             max_depth=args.max_depth,
             learning_rate=args.learning_rate,
+            show_progress=not args.no_progress,
         )
         result = payload["benchmark"]
         print(
@@ -96,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
         learning_rate=args.learning_rate,
+        show_progress=not args.no_progress,
     )
     print(f"compute-scaling runs={len(payload['runs'])} output={args.outdir}/compute_scaling.tsv")
     return 0
