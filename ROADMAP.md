@@ -1,10 +1,40 @@
 # TCGA RNA-seq ML — Study Roadmap
 
-Status: **design locked before implementation**
+Status: **M0–M7 complete; M8 documentation complete; public release tag pending license selection**
 
 This project will be an interpretable, leakage-resistant machine-learning study of TCGA PanCancer RNA-seq expression data. The goal is not only to classify tumor type, but to determine how much of the transcriptome is required for strong prediction, where models fail, how stable the selected genes are, and what compute/performance tradeoffs are involved.
 
 > Research-use ML case study only. This repository will not claim clinical diagnostic validity.
+
+
+## Completion status
+
+The design below was locked before implementation and is retained as the study
+record. The ingest, leakage-safe preprocessing, classical and XGBoost
+comparisons, gene-budget/stability analysis, focused-pair analysis, and
+receipt-guarded final evaluation are complete.
+
+| Milestone | Status |
+|---|---|
+| M0 — Design and provenance | Complete |
+| M1 — Ingest and cohort builder | Complete |
+| M2 — Leakage-safe preprocessing | Complete |
+| M3 — Classical baseline benchmark | Complete |
+| M4 — Feature-budget and stability study | Complete |
+| M5 — Nonlinear/GPU benchmark | Complete |
+| M6 — Focused cancer-pair studies | Complete |
+| M7 — Final locked evaluation | Complete |
+| M8 — Portfolio release | Results documentation complete; license and public release tag pending |
+
+The optional PyTorch MLP was not implemented. It was explicitly conditional in
+the design, and the classical/XGBoost comparisons already answered the planned
+linear-versus-nonlinear and CPU-versus-GPU questions without adding an
+underpowered deep-learning search after the holdout evaluation.
+
+The selected 5,000-gene elastic net achieved macro F1 0.9808, balanced accuracy
+0.9801, and accuracy 0.9815 in the one-time 920-participant frozen holdout. See
+[the aggregate final-results report](docs/final_results.md) for the complete
+outcome and limitations.
 
 ## 1. Scientific questions
 
