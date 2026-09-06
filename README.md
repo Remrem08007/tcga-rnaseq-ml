@@ -2,7 +2,22 @@
 
 An interpretable, leakage-resistant machine-learning case study using the TCGA PanCancer Atlas batch-corrected RNA-seq expression matrix.
 
-The project is being built in stages. **No clinical diagnostic claim is made**; TCGA samples are retrospective research specimens with known cancer labels.
+The planned study is complete through its one-time frozen-holdout evaluation. **No clinical diagnostic claim is made**; TCGA samples are retrospective research specimens with known cancer labels.
+
+## Final result
+
+A 5,000-gene multinomial elastic-net pipeline was selected using development-only cross-validation, locked by SHA-256, refit on 3,679 development participants, and evaluated once on the frozen 920-participant holdout.
+
+| Metric | Final holdout |
+|---|---:|
+| **Macro F1 (primary)** | **0.9808** |
+| Balanced accuracy | 0.9801 |
+| Accuracy | 0.9815 |
+| Errors | 17 / 920 |
+
+The holdout macro F1 was 0.0019 below the development-CV mean. Fourteen of 17 errors occurred within the prespecified LUAD/LUSC and KIRC/KIRP pairs. See the [aggregate final-results report](docs/final_results.md) for model selection, feature stability, per-class results, compute measurements, numerical diagnostics, and limitations.
+
+The saved SAGA fit reached its configured iteration limit, so full numerical convergence was not certified. The reported metrics describe the exact locked model; coefficients and probabilities should be interpreted conservatively. The holdout was not rerun after this observation.
 
 ## Current implementation
 
@@ -24,9 +39,9 @@ Implemented and tested:
 - explicit CPU/CUDA device handling that refuses silent GPU-to-CPU fallback;
 - CPU thread-scaling and optional GPU timing benchmark with predictive metrics kept alongside timing results;
 - development-only LUAD↔LUSC and KIRC↔KIRP studies with OOF error analysis and fold-stable gene directions;
-- SHA-256-bound final-pipeline lock and receipt-guarded one-time holdout evaluator, tested on synthetic data only.
+- SHA-256-bound final-pipeline lock and receipt-guarded one-time holdout evaluator, exercised once on the frozen 920-participant TCGA holdout after synthetic CI validation.
 
-See [`ROADMAP.md`](ROADMAP.md) for the locked study design, [`docs/compute.md`](docs/compute.md) for the acceleration policy, [`docs/focused_pairs.md`](docs/focused_pairs.md) for the M6 interpretation guide, and [`docs/final_evaluation.md`](docs/final_evaluation.md) for the M7 lock/receipt protocol.
+See [`docs/final_results.md`](docs/final_results.md) for the aggregate outcome, [`ROADMAP.md`](ROADMAP.md) for the study design and milestone status, [`docs/compute.md`](docs/compute.md) for the acceleration policy, [`docs/focused_pairs.md`](docs/focused_pairs.md) for the M6 interpretation guide, and [`docs/final_evaluation.md`](docs/final_evaluation.md) for the M7 lock/receipt protocol.
 
 For the exact continuation commands on Nibi, see the
 [`Nibi analysis runbook`](docs/nibi_runbook.md).
@@ -150,7 +165,7 @@ By default this evaluates the locked `20, 50, 100, 200, 500, 1000, 5000, all` ge
 - `feature_stability.tsv` — how often each gene is selected across folds plus mean absolute linear-model coefficient;
 - `coefficients.tsv` — fold- and class-specific coefficients mapped back to the original TCGA gene index/symbol.
 
-Feature selection remains inside each training fold: `log2p1 → imputation → variance filtering → SelectKBest → scaling → model`. The frozen holdout is still untouched.
+Feature selection remains inside each training fold: `log2p1 → imputation → variance filtering → SelectKBest → scaling → model`. During this development study the frozen holdout remained untouched; it was opened only later by the locked final evaluator.
 
 ## Nonlinear XGBoost benchmark
 
@@ -241,7 +256,7 @@ python -m tcga_ml.focused_pairs_cli \
   --n-jobs 0
 ```
 
-The command filters to development participants before constructing either pair study. Within each pair, preprocessing, feature selection, and fitting remain inside the CV training fold. The implementation asserts that every development participant receives exactly one out-of-fold prediction. The frozen holdout is not passed to these estimators and remains reserved for M7.
+The command filters to development participants before constructing either pair study. Within each pair, preprocessing, feature selection, and fitting remain inside the CV training fold. The implementation asserts that every development participant receives exactly one out-of-fold prediction. The frozen holdout was not passed to these estimators and was later used once by the locked M7 evaluator.
 
 The study writes aggregate and per-class metrics, raw and row-normalized confusion counts, participant-level OOF predictions, confidence-ranked errors, and fold-stability/coefficient summaries mapped to TCGA genes. These are predictive development-set associations, not causal biomarkers or clinical validation. See [the focused-pair methodology](docs/focused_pairs.md) for the output contract and interpretation limits.
 
@@ -277,7 +292,7 @@ Locking and verification do not fit or score a model. The lock requires every se
 
 The real \`evaluate\` subcommand must be run only after the candidate and rationale are final. It creates a persistent receipt **before** loading holdout rows, refuses existing receipts/output directories, fits the locked pipeline on all development rows, and writes the fitted pipeline, participant predictions, final metrics, confusion data, and SVG figures. See [the final-evaluation protocol](docs/final_evaluation.md) before using it.
 
-The repository CI executes this workflow only on generated synthetic data. The real TCGA holdout has not been opened by these tests, no real final candidate has been selected here, and no TCGA holdout result is claimed.
+Repository CI exercises the complete lock-to-evaluate workflow only on generated synthetic data. Separately, the real candidate was selected from development-only evidence, its lock was verified while sealed, and the evaluator was run once on the frozen TCGA holdout. Aggregate results are reported in [`docs/final_results.md`](docs/final_results.md); participant-level predictions, the fitted model, and the evaluation receipt remain uncommitted.
 
 ## Green-commit rule
 
@@ -295,4 +310,4 @@ Large TCGA source and derived matrices are ignored by Git and are never committe
 
 ## License
 
-A license will be added before the first public release tag.
+No repository license has been selected yet. Until a license is added, the source remains under standard copyright despite being publicly viewable.
