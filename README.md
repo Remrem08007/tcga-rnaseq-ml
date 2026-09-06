@@ -310,4 +310,4 @@ Large TCGA source and derived matrices are ignored by Git and are never committe
 
 ## License
 
-No repository license has been selected yet. Until a license is added, the source remains under standard copyright despite being publicly viewable.
+Repository code and documentation are released under the [MIT License](LICENSE). TCGA data and other third-party inputs remain subject to their original terms and are not redistributed by this repository.

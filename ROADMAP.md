@@ -1,6 +1,6 @@
 # TCGA RNA-seq ML — Study Roadmap
 
-Status: **M0–M7 complete; M8 documentation complete; public release tag pending license selection**
+Status: **M0–M7 complete; M8 documentation and MIT licensing complete; public release tag pending**
 
 This project will be an interpretable, leakage-resistant machine-learning study of TCGA PanCancer RNA-seq expression data. The goal is not only to classify tumor type, but to determine how much of the transcriptome is required for strong prediction, where models fail, how stable the selected genes are, and what compute/performance tradeoffs are involved.
 
@@ -24,7 +24,7 @@ receipt-guarded final evaluation are complete.
 | M5 — Nonlinear/GPU benchmark | Complete |
 | M6 — Focused cancer-pair studies | Complete |
 | M7 — Final locked evaluation | Complete |
-| M8 — Portfolio release | Results documentation complete; license and public release tag pending |
+| M8 — Portfolio release | Results documentation and MIT license complete; public release tag pending |
 
 The optional PyTorch MLP was not implemented. It was explicitly conditional in
 the design, and the classical/XGBoost comparisons already answered the planned
